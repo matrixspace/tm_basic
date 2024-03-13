@@ -131,7 +131,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
         static constexpr bool value = true;
     };
     template <class T>
-    class JsonEncoder<T, std::enable_if_t<ConvertibleWithString<T>::value, void>> {
+    class JsonEncoder<T, std::enable_if_t<(!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && (!EncodableThroughProxy<T>::value || !JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value) && ConvertibleWithString<T>::value, void>> {
     public:
         static void write(nlohmann::json &output, std::optional<std::string> const &key, T const &data) {
             if (key) {
@@ -142,7 +142,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
         }
     };
     template <class T>
-    struct JsonWrappable<T, std::enable_if_t<ConvertibleWithString<T>::value, void>> {
+    struct JsonWrappable<T, std::enable_if_t<(!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && (!EncodableThroughProxy<T>::value || !JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value) && ConvertibleWithString<T>::value, void>> {
         static constexpr bool value = true;
     };
     //For same reason as in proto_interop, string_view and ByteDataView are not
@@ -294,6 +294,21 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
     };
     template <class T>
     struct JsonWrappable<std::list<T>, void> {
+        static constexpr bool value = JsonWrappable<T>::value;
+    };
+    template <class T>
+    class JsonEncoder<std::deque<T>, void> {
+    public:
+        static void write(nlohmann::json &output, std::optional<std::string> const &key, std::deque<T> const &data) {
+            auto &o = (key?output[*key]:output);
+            for (auto const &item : data) {
+                o.push_back(nlohmann::json());
+                JsonEncoder<T>::write(o.back(), std::nullopt, item);
+            }
+        }
+    };
+    template <class T>
+    struct JsonWrappable<std::deque<T>, void> {
         static constexpr bool value = JsonWrappable<T>::value;
     };
     template <class T>
@@ -608,7 +623,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
     };
     
     template <class T>
-    class JsonEncoder<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo, void>> {
+    class JsonEncoder<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo && (!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && (!EncodableThroughProxy<T>::value || !JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value) &&  !ConvertibleWithString<T>::value, void>> {
     private:
         template <std::size_t FieldCount, std::size_t FieldIndex>
         static void write_impl(nlohmann::json &output, T const &data) {
@@ -628,7 +643,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
         }
     };
     template <class T>
-    struct JsonWrappable<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo, void>> {
+    struct JsonWrappable<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo && (!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && (!EncodableThroughProxy<T>::value || !JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value) && !ConvertibleWithString<T>::value, void>> {
     private:
         template <std::size_t FieldCount, std::size_t FieldIndex>
         static constexpr bool value_internal() {
@@ -1212,7 +1227,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
         }
     };
     template <class T>
-    class JsonDecoder<T, std::enable_if_t<ConvertibleWithString<T>::value, void>> {
+    class JsonDecoder<T, std::enable_if_t<(!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && (!EncodableThroughProxy<T>::value || !JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value) && ConvertibleWithString<T>::value, void>> {
     public:
         static void fillFieldNameMapping(JsonFieldMapping const &mapping=JsonFieldMapping {}) {}
         static bool read(nlohmann::json const &input, std::optional<std::string> const &key, T &data, JsonFieldMapping const &mapping=JsonFieldMapping {}) {
@@ -1736,6 +1751,67 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
         }
         template <class X>
         static bool read_simd_ondemand(X &input, std::optional<std::string> const &key, std::list<T> &data, JsonFieldMapping const &mapping=JsonFieldMapping {}) {
+            data.clear();
+            bool ret = true;
+            try {
+                for (auto item : (key?input.get_object()[*key].get_array():input.get_array())) {
+                    data.push_back(T {});
+                    if (!JsonDecoder<T>::read_simd_ondemand(item, std::nullopt, data.back(), mapping)) {
+                        ret = false;
+                    }
+                }
+            } catch (simdjson::simdjson_error const &) {
+                ret = false;
+            }
+            return ret;
+        }
+    };
+    template <class T>
+    class JsonDecoder<std::deque<T>, void> {
+    public:
+        static void fillFieldNameMapping(JsonFieldMapping const &mapping=JsonFieldMapping {}) {
+            JsonDecoder<T>::fillFieldNameMapping(mapping);
+        }
+        static bool read(nlohmann::json const &input, std::optional<std::string> const &key, std::deque<T> &data, JsonFieldMapping const &mapping=JsonFieldMapping {}) {
+            data.clear();
+            auto const &i = (key?input.at(*key):input);
+            bool ret = true;
+            for (auto const &item : i) {
+                data.push_back(T {});
+                if (!JsonDecoder<T>::read(item, std::nullopt, data.back(), mapping)) {
+                    ret = false;
+                }
+            }
+            return ret;
+        }
+        static bool read_simd(simdjson::dom::element const &input, std::optional<std::string> const &key, std::deque<T> &data, JsonFieldMapping const &mapping=JsonFieldMapping {}) {
+            data.clear();
+            bool ret = true;
+            try {
+                if (key) {
+                    auto const &arr = input[*key].get_array();
+                    for (auto const &item : arr) {
+                        data.push_back(T {});
+                        if (!JsonDecoder<T>::read_simd(item, std::nullopt, data.back(), mapping)) {
+                            ret = false;
+                        }
+                    }
+                } else {
+                    auto const &arr = input.get_array();
+                    for (auto const &item : arr) {
+                        data.push_back(T {});
+                        if (!JsonDecoder<T>::read_simd(item, std::nullopt, data.back(), mapping)) {
+                            ret = false;
+                        }
+                    }
+                }
+            } catch (simdjson::simdjson_error const &) {
+                return false;
+            }
+            return ret;
+        }
+        template <class X>
+        static bool read_simd_ondemand(X &input, std::optional<std::string> const &key, std::deque<T> &data, JsonFieldMapping const &mapping=JsonFieldMapping {}) {
             data.clear();
             bool ret = true;
             try {
@@ -2936,7 +3012,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
         template <std::size_t Index>
         static void fillFieldNameMapping_internal(JsonFieldMapping const &mapping) {
             if constexpr (Index < sizeof...(Ts)) {
-                using F = std::tuple_element_t<Index, std::variant<Ts...>>;
+                using F = std::tuple_element_t<Index, std::tuple<Ts...>>;
                 JsonDecoder<F>::fillFieldNameMapping(mapping);
                 fillFieldNameMapping_internal<Index+1>(mapping);
             }
@@ -2968,7 +3044,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
     };
 
     template <class T>
-    class JsonDecoder<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo, void>> {
+    class JsonDecoder<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo && (!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && (!EncodableThroughProxy<T>::value || !JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value) && !ConvertibleWithString<T>::value, void>> {
     private:
         static bool s_fieldNameMappingFilled;
         static std::array<std::string, StructFieldInfo<T>::FIELD_NAMES.size()> s_fieldNameMapping;
@@ -3178,11 +3254,11 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
         }
     };
     template <class T>
-    bool JsonDecoder<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo, void>>::s_fieldNameMappingFilled = false;
+    bool JsonDecoder<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo && (!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && (!EncodableThroughProxy<T>::value || !JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value) && !ConvertibleWithString<T>::value, void>>::s_fieldNameMappingFilled = false;
     template <class T>
-    std::array<std::string, StructFieldInfo<T>::FIELD_NAMES.size()> JsonDecoder<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo, void>>::s_fieldNameMapping;
+    std::array<std::string, StructFieldInfo<T>::FIELD_NAMES.size()> JsonDecoder<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo && (!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && (!EncodableThroughProxy<T>::value || !JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value) && !ConvertibleWithString<T>::value, void>>::s_fieldNameMapping;
     template <class T>
-    std::array<std::function<void(T &)>, StructFieldInfo<T>::FIELD_NAMES.size()> JsonDecoder<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo, void>>::s_fieldPreprocessors;
+    std::array<std::function<void(T &)>, StructFieldInfo<T>::FIELD_NAMES.size()> JsonDecoder<T, std::enable_if_t<StructFieldInfo<T>::HasGeneratedStructFieldInfo && (!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && (!EncodableThroughProxy<T>::value || !JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value) && !ConvertibleWithString<T>::value, void>>::s_fieldPreprocessors;
 
     template <class T>
     class JsonDecoder<T, std::enable_if_t<bytedata_utils::ProtobufStyleSerializableChecker<T>::IsProtobufStyleSerializable(), void>> {
@@ -3541,18 +3617,18 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
     };
 
     template <class T>
-    class JsonEncoder<T, std::enable_if_t<EncodableThroughProxy<T>::value && JsonWrappable<typename EncodableThroughProxy<T>::EncodeProxyType>::value, void>> {
+    class JsonEncoder<T, std::enable_if_t<(!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && EncodableThroughProxy<T>::value && JsonWrappable<typename EncodableThroughProxy<T>::EncodeProxyType>::value, void>> {
     public:
         static void write(nlohmann::json &output, std::optional<std::string> const &key, T const &data) {
             JsonEncoder<typename EncodableThroughProxy<T>::EncodeProxyType>::write(output, key, EncodableThroughProxy<T>::toProxy(data));
         }
     };
     template <class T>
-    struct JsonWrappable<T, std::enable_if_t<EncodableThroughProxy<T>::value && JsonWrappable<typename EncodableThroughProxy<T>::EncodeProxyType>::value && JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value, void>> {
+    struct JsonWrappable<T, std::enable_if_t<(!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && EncodableThroughProxy<T>::value && JsonWrappable<typename EncodableThroughProxy<T>::EncodeProxyType>::value && JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value, void>> {
         static constexpr bool value = true;
     };
     template <class T>
-    class JsonDecoder<T, std::enable_if_t<EncodableThroughProxy<T>::value && JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value, void>> {
+    class JsonDecoder<T, std::enable_if_t<(!EncodableThroughMultipleProxies<T>::value || !JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value) && EncodableThroughProxy<T>::value && JsonWrappable<typename EncodableThroughProxy<T>::DecodeProxyType>::value, void>> {
     public:
         static void fillFieldNameMapping(JsonFieldMapping const &mapping=JsonFieldMapping {}) {
             JsonDecoder<typename EncodableThroughProxy<T>::DecodeProxyType>::fillFieldNameMapping(mapping);
@@ -3560,27 +3636,208 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace nlo
         static bool read(nlohmann::json const &input, std::optional<std::string> const &key, T &data, JsonFieldMapping const &mapping=JsonFieldMapping {}) {
             typename EncodableThroughProxy<T>::DecodeProxyType p;
             if (!JsonDecoder<typename EncodableThroughProxy<T>::DecodeProxyType>::read(input, key, p, mapping)) {
-                return false;
+                if constexpr (dev::cd606::tm::basic::ConvertibleWithString<T>::value) {
+                    auto const &i = (key?input.at(*key):input);
+                    if (i.is_null()) {
+                        data = ConvertibleWithString<T>::fromString("");
+                        return true;
+                    } else if (i.is_string()) {
+                        std::string s;
+                        i.get_to(s);
+                        data = ConvertibleWithString<T>::fromString(s);
+                        return true;
+                    } else {
+                        std::string s = i.dump();
+                        data = ConvertibleWithString<T>::fromString(s);
+                        return true;
+                    }
+                } else {
+                    return false;
+                }
             }
-            data = EncodableThroughProxy<T>::fromProxy(p);
+            data = EncodableThroughProxy<T>::fromProxy(std::move(p));
             return true;
         }
         static bool read_simd(simdjson::dom::element const &input, std::optional<std::string> const &key, T &data, JsonFieldMapping const &mapping=JsonFieldMapping {}) {
             typename EncodableThroughProxy<T>::DecodeProxyType p;
             if (!JsonDecoder<typename EncodableThroughProxy<T>::DecodeProxyType>::read_simd(input, key, p, mapping)) {
-                return false;
+                if constexpr (dev::cd606::tm::basic::ConvertibleWithString<T>::value) {
+                    std::string s;
+                    auto ret = JsonDecoder<std::string>::read_simd(input, key, s, mapping);
+                    if (ret) {
+                        data = ConvertibleWithString<T>::fromString(s);
+                        return true;
+                    } else {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
             }
-            data = EncodableThroughProxy<T>::fromProxy(p);
+            data = EncodableThroughProxy<T>::fromProxy(std::move(p));
             return true;
         }
         template <class X>
         static bool read_simd_ondemand(X &input, std::optional<std::string> const &key, T &data, JsonFieldMapping const &mapping=JsonFieldMapping {}) {
             typename EncodableThroughProxy<T>::DecodeProxyType p;
             if (!JsonDecoder<typename EncodableThroughProxy<T>::DecodeProxyType>::template read_simd_ondemand<X>(input, key, p, mapping)) {
+                if constexpr (dev::cd606::tm::basic::ConvertibleWithString<T>::value) {
+                    std::string s;
+                    auto ret = JsonDecoder<std::string>::read_simd_ondemand(input, key, s, mapping);
+                    if (ret) {
+                        data = ConvertibleWithString<T>::fromString(s);
+                        return true;
+                    } else {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            data = EncodableThroughProxy<T>::fromProxy(std::move(p));
+            return true;
+        }
+    };
+
+    template <class T>
+    class JsonEncoder<T, std::enable_if_t<EncodableThroughMultipleProxies<T>::value && JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value, void>> {
+    public:
+        static void write(nlohmann::json &output, std::optional<std::string> const &key, T const &data) {
+            JsonEncoder<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::write(output, key, EncodableThroughMultipleProxies<T>::toJSONEncodeProxy(data));
+        }
+    };
+    template <class T>
+    struct JsonWrappable<T, std::enable_if_t<EncodableThroughMultipleProxies<T>::value && JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value, void>> {
+        static constexpr bool value = true;
+    };
+    template <class T>
+    class JsonDecoder<T, std::enable_if_t<EncodableThroughMultipleProxies<T>::value && JsonWrappable<typename EncodableThroughMultipleProxies<T>::JSONEncodeProxyType>::value, void>> {
+    private:
+        using P = typename EncodableThroughMultipleProxies<T>::DecodeProxyTypes;
+        template <std::size_t Idx>
+        static void fillFieldNameMappingHelper(JsonFieldMapping const &mapping) {
+            if constexpr (Idx>=0 && Idx<std::variant_size_v<P>) {
+                if constexpr (JsonWrappable<std::variant_alternative_t<Idx, P>>::value) {
+                    JsonDecoder<std::variant_alternative_t<Idx, P>>::fillFieldNameMapping(mapping);
+                }
+                fillFieldNameMappingHelper<Idx+1>(mapping);
+            }
+        }
+        template <std::size_t Idx>
+        static bool readHelper(nlohmann::json const &input, std::optional<std::string> const &key, T &data, JsonFieldMapping const &mapping) {
+            if constexpr (Idx>=0 && Idx<std::variant_size_v<P>) {
+                if constexpr (JsonWrappable<std::variant_alternative_t<Idx, P>>::value) {
+                    try {
+                        std::variant_alternative_t<Idx, P> x;
+                        if (JsonDecoder<std::variant_alternative_t<Idx, P>>::read(input, key, x, mapping)) {
+                            data = EncodableThroughMultipleProxies<T>::fromProxy(P {std::move(x)});
+                            return true;
+                        }
+                    } catch (nlohmann::json::exception const &) {                        
+                    }
+                }
+                return readHelper<Idx+1>(input, key, data, mapping);
+            } else {
                 return false;
             }
-            data = EncodableThroughProxy<T>::fromProxy(p);
-            return true;
+        }
+        template <std::size_t Idx>
+        static bool readSimdHelper(simdjson::dom::element const &input, std::optional<std::string> const &key, T &data, JsonFieldMapping const &mapping) {
+            if constexpr (Idx>=0 && Idx<std::variant_size_v<P>) {
+                if constexpr (JsonWrappable<std::variant_alternative_t<Idx, P>>::value) {
+                    try {
+                        std::variant_alternative_t<Idx, P> x;
+                        if (JsonDecoder<std::variant_alternative_t<Idx, P>>::read_simd(input, key, x, mapping)) {
+                            data = EncodableThroughMultipleProxies<T>::fromProxy(P {std::move(x)});
+                            return true;
+                        }
+                    } catch (simdjson::simdjson_error const &) {                        
+                    }
+                }
+                return readSimdHelper<Idx+1>(input, key, data, mapping);
+            } else {
+                return false;
+            }
+        }
+        template <class X, std::size_t Idx>
+        static bool readSimdOnDemandHelper(X &input, std::optional<std::string> const &key, T &data, JsonFieldMapping const &mapping) {
+            if constexpr (Idx>=0 && Idx<std::variant_size_v<P>) {
+                if constexpr (JsonWrappable<std::variant_alternative_t<Idx, P>>::value) {
+                    try {
+                        std::variant_alternative_t<Idx, P> x;
+                        if (JsonDecoder<std::variant_alternative_t<Idx, P>>::read_simd_ondemand(input, key, x, mapping)) {
+                            data = EncodableThroughMultipleProxies<T>::fromProxy(P {std::move(x)});
+                            return true;
+                        }
+                    } catch (simdjson::simdjson_error const &) {                        
+                    }
+                }
+                return readSimdOnDemandHelper<X, Idx+1>(input, key, data, mapping);
+            } else {
+                return false;
+            }
+        }
+    public:
+        static void fillFieldNameMapping(JsonFieldMapping const &mapping=JsonFieldMapping {}) {
+            fillFieldNameMappingHelper<0>(mapping);
+        }
+        static bool read(nlohmann::json const &input, std::optional<std::string> const &key, T &data, JsonFieldMapping const &mapping=JsonFieldMapping {}) {
+            if (readHelper<0>(input, key, data, mapping)) {
+                return true;
+            }
+            if constexpr (dev::cd606::tm::basic::ConvertibleWithString<T>::value) {
+                auto const &i = (key?input.at(*key):input);
+                if (i.is_null()) {
+                    data = ConvertibleWithString<T>::fromString("");
+                    return true;
+                } else if (i.is_string()) {
+                    std::string s;
+                    i.get_to(s);
+                    data = ConvertibleWithString<T>::fromString(s);
+                    return true;
+                } else {
+                    std::string s = i.dump();
+                    data = ConvertibleWithString<T>::fromString(s);
+                    return true;
+                }
+            } else {
+                return false;
+            }
+        }
+        static bool read_simd(simdjson::dom::element const &input, std::optional<std::string> const &key, T &data, JsonFieldMapping const &mapping=JsonFieldMapping {}) {
+            if (readSimdHelper<0>(input, key, data, mapping)) {
+                return true;
+            }
+            if constexpr (dev::cd606::tm::basic::ConvertibleWithString<T>::value) {
+                std::string s;
+                auto ret = JsonDecoder<std::string>::read_simd(input, key, s, mapping);
+                if (ret) {
+                    data = ConvertibleWithString<T>::fromString(s);
+                    return true;
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        template <class X>
+        static bool read_simd_ondemand(X &input, std::optional<std::string> const &key, T &data, JsonFieldMapping const &mapping=JsonFieldMapping {}) {
+            if (readSimdOnDemandHelper<X, 0>(input, key, data, mapping)) {
+                return true;
+            }
+            if constexpr (dev::cd606::tm::basic::ConvertibleWithString<T>::value) {
+                std::string s;
+                auto ret = JsonDecoder<std::string>::read_simd_ondemand(input, key, s, mapping);
+                if (ret) {
+                    data = ConvertibleWithString<T>::fromString(s);
+                    return true;
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
         }
     };
 

@@ -22,24 +22,41 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
         }
         template <class First, class... More>
         static constexpr std::size_t fieldCountHelper(std::size_t soFar) {
-            if constexpr (sizeof...(More) == 0) {
-                return StructFieldInfo<First>::FIELD_NAMES.size()+soFar;
+            if constexpr (StructFieldInfo<First>::HasGeneratedStructFieldInfo) {
+                if constexpr (sizeof...(More) == 0) {
+                    return StructFieldInfo<First>::FIELD_NAMES.size()+soFar;
+                } else {
+                    return fieldCountHelper<More...>(StructFieldInfo<First>::FIELD_NAMES.size()+soFar);
+                }
             } else {
-                return fieldCountHelper<More...>(StructFieldInfo<First>::FIELD_NAMES.size()+soFar);
+                if constexpr (sizeof...(More) == 0) {
+                    return 1+soFar;
+                } else {
+                    return fieldCountHelper<More...>(1+soFar);
+                }
             }
         } 
         static constexpr std::size_t N = fieldCountHelper<Ts...>(0);
 
         template <std::size_t Idx, class First, class... More>
         static constexpr void fieldNamesHelper_internal(std::array<std::string_view, N> &ret) {
-            auto const &nm = StructFieldInfo<First>::FIELD_NAMES;
-            for (std::size_t ii=0; ii<nm.size(); ++ii) {
-                ret[ii+Idx] = nm[ii];
-            }
-            if constexpr (sizeof...(More) == 0) {
-                return;
+            if constexpr (StructFieldInfo<First>::HasGeneratedStructFieldInfo) {
+                auto const &nm = StructFieldInfo<First>::FIELD_NAMES;
+                for (std::size_t ii=0; ii<nm.size(); ++ii) {
+                    ret[ii+Idx] = nm[ii];
+                }
+                if constexpr (sizeof...(More) == 0) {
+                    return;
+                } else {
+                    fieldNamesHelper_internal<Idx+StructFieldInfo<First>::FIELD_NAMES.size(),More...>(ret);
+                }
             } else {
-                fieldNamesHelper_internal<Idx+StructFieldInfo<First>::FIELD_NAMES.size(),More...>(ret);
+                ret[Idx] = "";
+                if constexpr (sizeof...(More) == 0) {
+                    return;
+                } else {
+                    fieldNamesHelper_internal<Idx+1,More...>(ret);
+                }
             }
         }
         static constexpr std::array<std::string_view, N> fieldNamesHelper() {
@@ -49,14 +66,26 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
         }
         template <std::size_t Idx, class First, class... More>
         static constexpr int getFieldIndexHelper(std::string_view const &fieldName) {
-            int ret = StructFieldInfo<First>::getFieldIndex(fieldName);
-            if (ret >= 0) {
-                return ret+Idx;
-            } else {
-                if constexpr (sizeof...(More) == 0) {
-                    return -1;
+            if constexpr (StructFieldInfo<First>::HasGeneratedStructFieldInfo) {
+                int ret = StructFieldInfo<First>::getFieldIndex(fieldName);
+                if (ret >= 0) {
+                    return ret+Idx;
                 } else {
-                    return getFieldIndexHelper<Idx+StructFieldInfo<First>::FIELD_NAMES.size(), More...>(fieldName);
+                    if constexpr (sizeof...(More) == 0) {
+                        return -1;
+                    } else {
+                        return getFieldIndexHelper<Idx+StructFieldInfo<First>::FIELD_NAMES.size(), More...>(fieldName);
+                    }
+                }
+            } else {
+                if (fieldName == "") {
+                    return Idx;
+                } else {
+                    if constexpr (sizeof...(More) == 0) {
+                        return -1;
+                    } else {
+                        return getFieldIndexHelper<Idx+1, More...>(fieldName);
+                    }
                 }
             }
         }
@@ -69,21 +98,33 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
     };
 
     namespace struct_field_info_helper_internal {
-        template <std::size_t TupleStart, int Idx, class... Ts>
+        template <std::size_t TupleStart, std::size_t Idx, class... Ts>
         class TupleStructTypeHelper {
         };
-        template <std::size_t TupleStart, int Idx>
-        class TupleStructTypeHelper<TupleStart, Idx> {
+
+        template <std::size_t TupleStart, class First, class... Ts>
+        class TupleStructTypeHelper<TupleStart, 0, First, Ts...> {
         public:
-            using PartialType = void;
-            static constexpr int PartialIdx = -1;
-            static constexpr int TupleIdx = std::numeric_limits<std::size_t>::max();
+            static_assert(StructFieldInfo<First>::FIELD_NAMES.size() > 0);
+            using PartialType = First;
+            static constexpr std::size_t PartialIdx = 0;
+            static constexpr std::size_t TupleIdx = TupleStart;
         };
-        template <std::size_t TupleStart, int Idx, class First, class... More>
+
+        template <std::size_t TupleStart, class First>
+        class TupleStructTypeHelper<TupleStart, 0, First> {
+        public:
+            static_assert(StructFieldInfo<First>::FIELD_NAMES.size() > 0);
+            using PartialType = First;
+            static constexpr std::size_t PartialIdx = 0;
+            static constexpr std::size_t TupleIdx = TupleStart;
+        };
+
+        template <std::size_t TupleStart, std::size_t Idx, class First, class... More>
         class TupleStructTypeHelper<TupleStart, Idx, First, More...> {
         public:
             using PartialType = std::conditional_t<
-                (Idx >= 0 && Idx < StructFieldInfo<First>::FIELD_NAMES.size())
+                (Idx < StructFieldInfo<First>::FIELD_NAMES.size())
                 , First
                 , typename TupleStructTypeHelper<
                     TupleStart+1
@@ -91,8 +132,8 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     , More...
                 >::PartialType
             >;
-            static constexpr int PartialIdx = (
-                (Idx >= 0 && Idx < StructFieldInfo<First>::FIELD_NAMES.size())
+            static constexpr std::size_t PartialIdx = (
+                (Idx < StructFieldInfo<First>::FIELD_NAMES.size())
                 ?
                 Idx
                 :
@@ -103,7 +144,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                 >::PartialIdx
             );
             static constexpr std::size_t TupleIdx = (
-                (Idx >= 0 && Idx < StructFieldInfo<First>::FIELD_NAMES.size())
+                (Idx < StructFieldInfo<First>::FIELD_NAMES.size())
                 ?
                 TupleStart
                 :
@@ -114,7 +155,8 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                 >::TupleIdx
             );
         };
-    }   
+    }
+    
     template <int Idx, class... Ts>
     class StructFieldTypeInfo<std::tuple<Ts...>, Idx> {
     private:

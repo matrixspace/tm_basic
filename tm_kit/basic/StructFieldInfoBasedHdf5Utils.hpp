@@ -130,9 +130,9 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace str
             static H5::DataType TheType() {
                 H5::EnumType ret {H5::PredType::NATIVE_INT};
                 int v = 0;
-                for (auto const &name : bytedata_utils::IsEnumWithStringRepresentation<T>::names) {
-                    ret.insert(std::string {name}, &v);
-                    ++v;
+                for (auto const &item : bytedata_utils::IsEnumWithStringRepresentation<T>::namesAndValues) {
+                    v = (int) item.second;
+                    ret.insert(std::string {item.first}, &v);
                 }
                 return ret;
             }
@@ -184,6 +184,127 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace str
     public:
         static H5::DataType hdf5DataType() {
             return internal::StructFieldInfoBasedHdf5Support<T>::TheType();
+        }
+        static std::unique_ptr<H5::DataSet> openOrCreateEmpty(H5::H5File *file, std::string const &datasetName, hsize_t maxSize = H5S_UNLIMITED, hsize_t chunkSize=10000) {
+            std::vector<std::string> parts;
+            boost::split(parts, datasetName, boost::is_any_of("/"));
+            std::vector<std::string> realParts;
+            for (auto const &p : parts) {
+                auto p1 = boost::trim_copy(p);
+                if (p1 != "") {
+                    realParts.push_back(p1);
+                }
+            }
+            if (realParts.empty()) {
+                return {};
+            }
+            std::vector<std::unique_ptr<H5::Group>> groups;
+            for (std::size_t ii=0; ii<realParts.size()-1; ++ii) {
+                std::unique_ptr<H5::Group> gr;
+                try {
+                    if (ii == 0) {
+                        gr = std::make_unique<H5::Group>(
+                            file->openGroup(realParts[ii])
+                        );
+                    } else {
+                        gr = std::make_unique<H5::Group>(
+                            groups.back()->openGroup(realParts[ii])
+                        );
+                    }
+                } catch (H5::Exception const &) {
+                    if (ii == 0) {
+                        gr = std::make_unique<H5::Group>(
+                            file->createGroup(realParts[ii])
+                        );
+                    } else {
+                        gr = std::make_unique<H5::Group>(
+                            groups.back()->createGroup(realParts[ii])
+                        );
+                    }
+                }
+                groups.push_back(std::move(gr));
+            }
+            try {
+                if (groups.empty()) {
+                    return std::make_unique<H5::DataSet>(
+                        file->openDataSet(
+                            realParts.back()
+                        )
+                    );
+                } else {
+                    return std::make_unique<H5::DataSet>(
+                        groups.back()->openDataSet(
+                            realParts.back()
+                        )
+                    );
+                }
+            } catch (H5::Exception const &) {
+                hsize_t dim[1] = {0};
+                hsize_t mdim[1] = {maxSize};
+                H5::DataSpace ds {1, dim, mdim};
+                hsize_t chunk[1] = {chunkSize};
+                H5::DSetCreatPropList pl;
+                pl.setChunk(1, chunk);
+                if (groups.empty()) {
+                    return std::make_unique<H5::DataSet>(
+                        file->createDataSet(
+                            realParts.back()
+                            , hdf5DataType()
+                            , ds
+                            , pl
+                        )
+                    );
+                } else {
+                    return std::make_unique<H5::DataSet>(
+                        groups.back()->createDataSet(
+                            realParts.back()
+                            , hdf5DataType()
+                            , ds
+                            , pl
+                        )
+                    );
+                }
+            }
+        }
+        static void deleteDataSet(H5::H5File *file, std::string const &datasetName) {
+            std::vector<std::string> parts;
+            boost::split(parts, datasetName, boost::is_any_of("/"));
+            std::vector<std::string> realParts;
+            for (auto const &p : parts) {
+                auto p1 = boost::trim_copy(p);
+                if (p1 != "") {
+                    realParts.push_back(p1);
+                }
+            }
+            if (realParts.empty()) {
+                return;
+            }
+            std::vector<std::unique_ptr<H5::Group>> groups;
+            for (std::size_t ii=0; ii<realParts.size()-1; ++ii) {
+                std::unique_ptr<H5::Group> gr;
+                try {
+                    if (ii == 0) {
+                        gr = std::make_unique<H5::Group>(
+                            file->openGroup(realParts[ii])
+                        );
+                    } else {
+                        gr = std::make_unique<H5::Group>(
+                            groups.back()->openGroup(realParts[ii])
+                        );
+                    }
+                } catch (H5::Exception const &) {
+                    return;
+                }
+                groups.push_back(std::move(gr));
+            }
+            try {
+                if (groups.empty()) {
+                    file->unlink(realParts.back());
+                } else {
+                    groups.back()->unlink(realParts.back());
+                }
+            } catch (H5::Exception const &) {
+            }
         }
         static void write(std::vector<T> const &data, std::string const &fileName, std::string const &datasetName) {
             hsize_t dim[1] = {data.size()};
@@ -260,49 +381,95 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace str
             dataset->write(data.data(), theType);
         }
         static void read(std::vector<T> &data, std::string const &fileName, std::string const &datasetName) {
-            auto file = std::make_unique<H5::H5File>(
-                fileName
-                , H5F_ACC_RDONLY
-            );
-            auto theType = internal::StructFieldInfoBasedHdf5Support<T>::TheType();
-            std::vector<std::string> parts;
-            boost::split(parts, datasetName, boost::is_any_of("/"));
-            std::vector<std::string> realParts;
-            for (auto const &p : parts) {
-                auto p1 = boost::trim_copy(p);
-                if (p1 != "") {
-                    realParts.push_back(p1);
+            try {
+                auto file = std::make_unique<H5::H5File>(
+                    fileName
+                    , H5F_ACC_RDONLY
+                );
+                auto theType = internal::StructFieldInfoBasedHdf5Support<T>::TheType();
+                std::vector<std::string> parts;
+                boost::split(parts, datasetName, boost::is_any_of("/"));
+                std::vector<std::string> realParts;
+                for (auto const &p : parts) {
+                    auto p1 = boost::trim_copy(p);
+                    if (p1 != "") {
+                        realParts.push_back(p1);
+                    }
                 }
-            }
-            if (realParts.empty()) {
-                return;
-            }
-            std::vector<std::unique_ptr<H5::Group>> groups;
-            for (std::size_t ii=0; ii<realParts.size()-1; ++ii) {
-                std::unique_ptr<H5::Group> gr;
-                if (ii == 0) {
-                    gr = std::make_unique<H5::Group>(
-                        file->openGroup(realParts[ii])
+                if (realParts.empty()) {
+                    return;
+                }
+                std::vector<std::unique_ptr<H5::Group>> groups;
+                for (std::size_t ii=0; ii<realParts.size()-1; ++ii) {
+                    std::unique_ptr<H5::Group> gr;
+                    if (ii == 0) {
+                        gr = std::make_unique<H5::Group>(
+                            file->openGroup(realParts[ii])
+                        );
+                    } else {
+                        gr = std::make_unique<H5::Group>(
+                            groups.back()->openGroup(realParts[ii])
+                        );
+                    }
+                    groups.push_back(std::move(gr));
+                }
+                std::unique_ptr<H5::DataSet> dataset;
+                if (groups.empty()) {
+                    dataset = std::make_unique<H5::DataSet>(
+                        file->openDataSet(realParts.back())
                     );
                 } else {
-                    gr = std::make_unique<H5::Group>(
-                        groups.back()->openGroup(realParts[ii])
+                    dataset = std::make_unique<H5::DataSet>(
+                        groups.back()->openDataSet(realParts.back())
                     );
                 }
-                groups.push_back(std::move(gr));
+                data.resize(dataset->getSpace().getSimpleExtentNpoints());
+                dataset->read(data.data(), theType);
+            } catch (H5::Exception const &) {
+                data.clear();
             }
-            std::unique_ptr<H5::DataSet> dataset;
-            if (groups.empty()) {
-                dataset = std::make_unique<H5::DataSet>(
-                    file->openDataSet(realParts.back())
-                );
-            } else {
-                dataset = std::make_unique<H5::DataSet>(
-                    groups.back()->openDataSet(realParts.back())
-                );
-            }
-            data.resize(dataset->getSpace().getSimpleExtentNpoints());
-            dataset->read(data.data(), theType);
+        }
+        static void append(std::vector<T> const &data, std::unique_ptr<H5::DataSet> const &dataset) {
+            auto dataType = hdf5DataType();
+            auto count = dataset->getSpace().getSimpleExtentNpoints();
+            hsize_t s[1] = {(hsize_t) count + (hsize_t) data.size()};
+            dataset->extend(s);
+            hsize_t mems[1] = {(hsize_t) data.size()};
+            H5::DataSpace mem_ds {1, mems};
+            hsize_t files[1] = {(hsize_t) data.size()};
+            hsize_t start[1] = {(hsize_t) count};
+            auto file_ds = dataset->getSpace();
+            file_ds.selectHyperslab(H5S_SELECT_SET, files, start);
+            dataset->write(data.data(), dataType, mem_ds, file_ds);
+        }
+        static void append(T const &data, std::unique_ptr<H5::DataSet> const &dataset) {
+            auto dataType = hdf5DataType();
+            auto count = dataset->getSpace().getSimpleExtentNpoints();
+            hsize_t s[1] = {(hsize_t) count + 1};
+            dataset->extend(s);
+            hsize_t mems[1] = {1};
+            H5::DataSpace mem_ds {1, mems};
+            hsize_t files[1] = {1};
+            hsize_t start[1] = {(hsize_t) count};
+            auto file_ds = dataset->getSpace();
+            file_ds.selectHyperslab(H5S_SELECT_SET, files, start);
+            dataset->write(&data, dataType, mem_ds, file_ds);
+        }
+        static void append(std::vector<T> const &data, std::string const &fileName, std::string const &datasetName, hsize_t maxSize = H5S_UNLIMITED, hsize_t chunkSize=10000) {
+            auto file = std::make_unique<H5::H5File>(
+                fileName
+                , H5F_ACC_RDWR|H5F_ACC_CREAT
+            );
+            auto dataset = openOrCreateEmpty(file.get(), datasetName, maxSize, chunkSize);
+            append(data, dataset);
+        }
+        static void append(T const &data, std::string const &fileName, std::string const &datasetName, hsize_t maxSize = H5S_UNLIMITED, hsize_t chunkSize=10000) {
+            auto file = std::make_unique<H5::H5File>(
+                fileName
+                , H5F_ACC_RDWR|H5F_ACC_CREAT
+            );
+            auto dataset = openOrCreateEmpty(file.get(), datasetName, maxSize, chunkSize);
+            append(data, dataset);
         }
     };
 

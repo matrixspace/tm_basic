@@ -2,6 +2,7 @@ tm_basic_headers = [
       'ByteData.hpp'
     , 'ByteData_Tuple_Variant_Piece.hpp'
     , 'ByteData_Tuple_Piece.hpp'
+    , 'ByteData_Variant_Piece.hpp'
     , 'ByteDataWithTopicRecordFile.hpp'
     , 'ByteDataWithTopicRecordFileImporterExporter.hpp'
     , 'CommonFlowUtils.hpp'
@@ -52,6 +53,10 @@ tm_basic_headers = [
     , 'TimePointAsString.hpp'
     , 'CollectionAsJoinedString.hpp'
     , 'StructFieldInfoBasedHdf5Utils.hpp'
+    , 'TimestampedCollectionImporter.hpp'
+    , 'ChronoUtils_AddOn.hpp'
+    , 'StructFieldInfoBasedTraverse.hpp'
+    , 'ConstValueType.hpp'
     ]
   
 install_headers(tm_basic_headers, subdir : 'tm_kit/basic')
