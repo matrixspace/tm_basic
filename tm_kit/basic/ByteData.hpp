@@ -23,7 +23,9 @@
 #include <tm_kit/basic/SingleLayerWrapper.hpp>
 #include <tm_kit/basic/ConstType.hpp>
 #include <tm_kit/basic/ConstValueType.hpp>
+#include <tm_kit/basic/ConstStringType.hpp>
 #include <tm_kit/basic/DateHolder.hpp>
+#include <tm_kit/basic/EqualityCheckHelper.hpp>
 #include <tm_kit/infra/WithTimeData.hpp>
 #include <tm_kit/infra/ChronoUtils.hpp>
 #include <boost/endian/conversion.hpp>
@@ -995,6 +997,18 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
             }
             static constexpr std::size_t calculateSize(ConstValueType<T, val> const &data) {
                 return RunCBORSerializer<T>::calculateSize(val);
+            }
+        };
+        template <typename T>
+        struct RunCBORSerializer<ConstStringType<T>, void> {
+            static std::string apply(ConstStringType<T> const &) {
+                return RunCBORSerializer<std::string>::apply(std::string {ConstStringType<T>::VALUE});
+            }
+            static std::size_t apply(ConstStringType<T> const &, char *output) {
+                return RunCBORSerializer<std::string>::apply(std::string {ConstStringType<T>::VALUE}, output);
+            }
+            static constexpr std::size_t calculateSize(ConstStringType<T> const &) {
+                return RunCBORSerializer<std::string>::calculateSize(std::string {ConstStringType<T>::VALUE});
             }
         };
 
@@ -2617,6 +2631,29 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                 return std::get<1>(*r);
             }
         };
+        template <typename T>
+        struct RunCBORDeserializer<ConstStringType<T>, void> {
+            static std::optional<std::tuple<ConstStringType<T>, size_t>> apply(std::string_view const &data, size_t start) {
+                auto r = RunCBORDeserializer<std::string>::apply(data, start);
+                if (!r) {
+                    return std::nullopt;
+                }
+                if (std::string_view(std::get<0>(*r)) != ConstStringType<T>::VALUE) {
+                    return std::nullopt;
+                }
+                return std::tuple<ConstStringType<T>, size_t> {ConstStringType<T> {}, std::get<1>(*r)};
+            }
+            static std::optional<size_t> applyInPlace(ConstStringType<T> &, std::string_view const &data, size_t start) {
+                auto r = RunCBORDeserializer<std::string>::apply(data, start);
+                if (!r) {
+                    return std::nullopt;
+                }
+                if (std::string_view(std::get<0>(*r)) != ConstStringType<T>::VALUE) {
+                    return std::nullopt;
+                }
+                return std::get<1>(*r);
+            }
+        };
 
         template <class T>
         struct ProtobufStyleSerializableChecker {
@@ -2700,7 +2737,13 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
         struct RunSerializer {
             static std::string apply(T const &data) {
                 std::string s;
+#ifdef _MSC_VER
+                if constexpr (DirectlySerializableChecker<T>::IsDirectlySerializable()) {
+                    data.SerializeToString(&s);
+                }
+#else
                 data.SerializeToString(&s);
+#endif
                 return s;
             }
         };
@@ -3593,6 +3636,54 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
     template <class T>
     inline bool operator==(TypedDataWithTopic<T> const &a, TypedDataWithTopic<T> const &b) {
         return (a.topic == b.topic && a.content == b.content);
+    }
+    template <class T>
+    inline bool operator<(CBOR<T> const &a, CBOR<T> const &b) {
+        return (a.value < b.value);
+    }
+    template <class T>
+    inline bool operator<(CBORWithMaxSizeHint<T> const &a, CBORWithMaxSizeHint<T> const &b) {
+        if (ComparisonHelper<T>::check(a.value, b.value)) {
+            return true;
+        }
+        if (ComparisonHelper<T>::check(b.value, a.value)) {
+            return false;
+        }
+        return (a.maxSizeHint < b.maxSizeHint);
+    }
+    inline bool operator<(ByteData const &a, ByteData const &b) {
+        return (a.content < b.content);
+    }
+    inline bool operator<(ByteDataView const &a, ByteDataView const &b) {
+        return (a.content < b.content);
+    }
+    inline bool operator<(ByteDataWithTopic const &a, ByteDataWithTopic const &b) {
+        if (a.content < b.content) {
+            return true;
+        }
+        if (b.content < a.content) {
+            return false;
+        }
+        return (a.topic < b.topic);
+    }
+    inline bool operator<(ByteDataWithID const &a, ByteDataWithID const &b) {
+        if (a.content < b.content) {
+            return true;
+        }
+        if (b.content < a.content) {
+            return false;
+        }
+        return (a.id < b.id);
+    }
+    template <class T>
+    inline bool operator<(TypedDataWithTopic<T> const &a, TypedDataWithTopic<T> const &b) {
+        if (ComparisonHelper<T>::check(a.content, b.content)) {
+            return true;
+        }
+        if (ComparisonHelper<T>::check(b.content, a.content)) {
+            return false;
+        }
+        return (a.topic < b.topic);
     }
 } } } } 
 

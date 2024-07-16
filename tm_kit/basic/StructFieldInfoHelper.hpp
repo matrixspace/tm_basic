@@ -29,6 +29,8 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
     class StructFieldInfo<infra::VersionedData<VersionType,DataType,CmpType>> {
     public:
         static constexpr bool HasGeneratedStructFieldInfo = true;
+        static constexpr bool EncDecWithFieldNames = true;
+        static constexpr std::string_view REFERENCE_NAME = "infra::VersionedData<>";
         static constexpr std::array<std::string_view, 2> FIELD_NAMES = { 
             "version", "data"
         };
@@ -75,6 +77,8 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
     class StructFieldInfo<infra::GroupedVersionedData<GroupIDType, VersionType,DataType,CmpType>> {
     public:
         static constexpr bool HasGeneratedStructFieldInfo = true;
+        static constexpr bool EncDecWithFieldNames = true;
+        static constexpr std::string_view REFERENCE_NAME = "infra::GroupedVersionedData<>";
         static constexpr std::array<std::string_view, 3> FIELD_NAMES = { 
             "groupID", "version", "data"
         };
