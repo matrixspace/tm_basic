@@ -12,7 +12,11 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
         class StructFieldInfoBasedTuplefy {
         private:
             static constexpr std::size_t N = StructFieldInfo<T>::FIELD_NAMES.size();
-            using IndexSeq = std::make_integer_sequence<int, N>;
+            // Use an int-typed count for make_integer_sequence to avoid a
+            // size_t->int conversion inside __integer_pack, which triggers
+            // "sorry, unimplemented: ... is not the entire pattern of the pack
+            // expansion" on GCC 15.
+            using IndexSeq = std::make_integer_sequence<int, static_cast<int>(StructFieldInfo<T>::FIELD_NAMES.size())>;
             template <int K>
             using OneFieldType = typename StructFieldTypeInfo<T,K>::TheType;
             template <int K>
