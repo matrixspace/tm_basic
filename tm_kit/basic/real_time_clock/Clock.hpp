@@ -34,15 +34,31 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace rea
         ~Clock() = default;
 
         /* An example of the JSON setting content is like:
+         *
+         * Fixed time mode (synchronize at a specific actual time):
          * {
          *  "clock_settings": {
          *    "actual" : {"time" : "10:00"}
-         *    , "virtual" : {"date" : "2020-04-10", "time" : "09:30"}  
+         *    , "virtual" : {"date" : "2020-04-10", "time" : "09:30"}
          *    , "speed" : "2.0"
          *  }
          * }
-         * The date and time formats must be exact
-         * if virtual date is empty string, the actual date is used
+         *
+         * Alignment mode (synchronize at next aligned minute boundary):
+         * {
+         *  "clock_settings": {
+         *    "actual_align_minute" : 5
+         *    , "virtual" : {"date" : "2020-04-10", "time" : "09:30"}
+         *    , "speed" : "2.0"
+         *  }
+         * }
+         *
+         * When "actual_align_minute" is present, it takes precedence over "actual.time".
+         * The alignment value specifies the minute interval (e.g., 5 = align on 0,5,10,...55).
+         * All processes reading the same config will wait for the same alignment point.
+         *
+         * The date and time formats must be exact.
+         * If virtual date is empty string, the actual date is used.
          */
         static ClockSettings loadClockSettingsFromJSONFile(std::string const &fileName);
         static ClockSettings loadClockSettingsFromJSONString(std::string const &jsonContent);
