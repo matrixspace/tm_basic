@@ -111,63 +111,6 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
             };
         }
 
-        template <std::size_t BufferSize>
-        class BufferedReader {
-        private:
-            std::unique_ptr<char[]> buf_[2];
-            int bufIndex_;
-            std::size_t bufPos_[2], bufEndPos_[2];
-            bool fileEof_;
-            bool done_;
-        public:
-            BufferedReader()
-                : buf_{
-                    std::make_unique<char[]>(BufferSize)
-                    , std::make_unique<char[]>(BufferSize)
-                }
-                , bufIndex_(0)
-                , bufPos_{0,0}
-                , bufEndPos_{0,0}
-                , fileEof_(false)
-                , done_(false)
-            {}
-            ~BufferedReader() = default;
-            BufferedReader(BufferedReader &&) = default;
-            BufferedReader &operator=(BufferedReader &&) = default;
-            std::string_view read(std::istream &is, std::size_t n) {
-                if (n > BufferSize) {
-                    return {nullptr, 0};
-                }
-                if (done_) {
-                    return {nullptr, 0};
-                }
-                if (bufEndPos_[bufIndex_] < bufPos_[bufIndex_]+n) {
-                    std::size_t needed = bufPos_[bufIndex_]+n-bufEndPos_[bufIndex_];
-                    if (fileEof_) {
-                        done_ = true;
-                        return {nullptr,0};
-                    }
-                    is.read(buf_[1-bufIndex_].get(), BufferSize);
-                    bufEndPos_[1-bufIndex_] = is.gcount();
-                    fileEof_ = (bufEndPos_[1-bufIndex_] != BufferSize);
-
-                    if (bufEndPos_[1-bufIndex_] < needed) {
-                        done_ = true;
-                        return {nullptr,0};
-                    }
-                    std::memmove(buf_[bufIndex_].get(), buf_[bufIndex_].get()+bufPos_[bufIndex_], n-needed);
-                    std::memcpy(buf_[bufIndex_].get()+(n-needed), buf_[1-bufIndex_].get(), needed);
-                    bufPos_[bufIndex_] = 0;
-                    bufEndPos_[bufIndex_] = 0;
-                    bufPos_[1-bufIndex_] = needed;
-                    bufIndex_ = 1-bufIndex_;
-                    return {buf_[1-bufIndex_].get(), n};
-                } else {
-                    bufPos_[bufIndex_] += n;
-                    return {buf_[bufIndex_].get()+bufPos_[bufIndex_]-n,n};
-                }
-            }
-        };
     };
 
     template <class Env>
@@ -714,37 +657,31 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
             }
         }
     };
-    template <class T, class TimeExtractor, class SizeType=std::size_t, std::size_t BufferSize=4*1024*1024>
+    template <class T, class TimeExtractor, class SizeType=std::size_t>
     class SimpleDeserializingReader {
     private:
         TimeExtractor timeExtractor_;
-        std::vector<GenericIOStreamImporterExporterHelper::BufferedReader<BufferSize>> bufferedReaders_;
-        std::unordered_map<std::istream *, std::size_t> readerIdx_;
+        std::vector<char> buf_;
     public:
-        SimpleDeserializingReader(TimeExtractor &&timeExtractor = TimeExtractor {}) : timeExtractor_(std::move(timeExtractor)), bufferedReaders_(), readerIdx_() {}
+        SimpleDeserializingReader(TimeExtractor &&timeExtractor = TimeExtractor {}) : timeExtractor_(std::move(timeExtractor)), buf_() {}
         template <class Env>
-        void start(Env *env, std::istream &is) {
-            bufferedReaders_.push_back({});
-            readerIdx_.insert({&is, bufferedReaders_.size()-1});
-        }
+        void start(Env *env, std::istream &is) {}
         template <class Env>
         std::optional<std::tuple<typename Env::TimePointType, T>> readOne(Env *env, std::istream &is) {
-            auto idxIter = readerIdx_.find(&is);
-            if (idxIter == readerIdx_.end()) {
-                return std::nullopt;
-            }
-            auto &bufferedReader = bufferedReaders_[idxIter->second];
-            auto sizeBuf = bufferedReader.read(is, sizeof(SizeType));
-            if (sizeBuf.length() == 0) {
-                return std::nullopt;
-            }
             SizeType l;
-            std::memcpy(&l, sizeBuf.data(), sizeof(SizeType));
-            l = boost::endian::little_to_native<SizeType>(l);
-            auto dataBuf = bufferedReader.read(is, l);
-            if (dataBuf.length() == 0) {
+            is.read(reinterpret_cast<char *>(&l), sizeof(SizeType));
+            if (!is || is.gcount() != sizeof(SizeType)) {
                 return std::nullopt;
             }
+            l = boost::endian::little_to_native<SizeType>(l);
+            if (buf_.size() < l) {
+                buf_.resize(l);
+            }
+            is.read(buf_.data(), static_cast<std::streamsize>(l));
+            if (!is || static_cast<std::size_t>(is.gcount()) != l) {
+                return std::nullopt;
+            }
+            std::string_view dataBuf(buf_.data(), l);
             if constexpr (bytedata_utils::DirectlySerializableChecker<T>::IsDirectlySerializable()) {
                 auto ret = bytedata_utils::RunDeserializer<T>::apply(dataBuf);
                 if (!ret) {
@@ -820,45 +757,40 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
             }
         }
     };
-    template <class T, class TimeReader, class SizeType=std::size_t, std::size_t BufferSize=4*1024*1024>
+    template <class T, class TimeReader, class SizeType=std::size_t>
     class SimpleDeserializingReaderWithTime {
     private:
         TimeReader timeReader_;
-        std::vector<GenericIOStreamImporterExporterHelper::BufferedReader<BufferSize>> bufferedReaders_;
-        std::unordered_map<std::istream *, std::size_t> readerIdx_;
+        std::vector<char> buf_;
     public:
-        SimpleDeserializingReaderWithTime(TimeReader &&timeReader = TimeReader {}) : timeReader_(std::move(timeReader)), bufferedReaders_(), readerIdx_() {}
+        SimpleDeserializingReaderWithTime(TimeReader &&timeReader = TimeReader {}) : timeReader_(std::move(timeReader)), buf_() {}
         template <class Env>
-        void start(Env *env, std::istream &is) {
-            bufferedReaders_.push_back({});
-            readerIdx_.insert({&is, bufferedReaders_.size()-1});
-        }
+        void start(Env *env, std::istream &is) {}
         template <class Env>
         std::optional<std::tuple<typename Env::TimePointType, T>> readOne(Env *env, std::istream &is) {
-            auto idxIter = readerIdx_.find(&is);
-            if (idxIter == readerIdx_.end()) {
+            char timeBuf[TimeReader::TimeSize];
+            is.read(timeBuf, TimeReader::TimeSize);
+            if (!is || is.gcount() != TimeReader::TimeSize) {
                 return std::nullopt;
             }
-            auto &bufferedReader = bufferedReaders_[idxIter->second];
-            auto timeBuf = bufferedReader.read(is, TimeReader::TimeSize);
-            if (timeBuf.length() == 0) {
-                return std::nullopt;
-            }
-            std::optional<typename Env::TimePointType> tp = timeReader_(env, timeBuf);
+            std::optional<typename Env::TimePointType> tp = timeReader_(env, std::string_view(timeBuf, TimeReader::TimeSize));
             if (!tp) {
                 return std::nullopt;
             }
-            auto sizeBuf = bufferedReader.read(is, sizeof(SizeType));
-            if (sizeBuf.length() == 0) {
-                return std::nullopt;
-            }
             SizeType l;
-            std::memcpy(&l, sizeBuf.data(), sizeof(SizeType));
-            l = boost::endian::little_to_native<SizeType>(l);
-            auto dataBuf = bufferedReader.read(is, l);
-            if (dataBuf.length() == 0) {
+            is.read(reinterpret_cast<char *>(&l), sizeof(SizeType));
+            if (!is || is.gcount() != sizeof(SizeType)) {
                 return std::nullopt;
             }
+            l = boost::endian::little_to_native<SizeType>(l);
+            if (buf_.size() < l) {
+                buf_.resize(l);
+            }
+            is.read(buf_.data(), static_cast<std::streamsize>(l));
+            if (!is || static_cast<std::size_t>(is.gcount()) != l) {
+                return std::nullopt;
+            }
+            std::string_view dataBuf(buf_.data(), l);
             if constexpr (bytedata_utils::DirectlySerializableChecker<T>::IsDirectlySerializable()) {
                 auto ret = bytedata_utils::RunDeserializer<T>::apply(dataBuf);
                 if (!ret) {
