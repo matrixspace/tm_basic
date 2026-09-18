@@ -185,7 +185,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
 
         template <class T, class Writer>
         static std::shared_ptr<typename infra::BasicWithTimeApp<Env>::template Exporter<T>>
-        createExporter(std::ostream &os, Writer &&writer, bool separateThread=false) {
+        createExporter(std::ostream &os, Writer &&writer, bool separateThread=false, bool flushImmediately=true) {
             return infra::BasicWithTimeApp<Env>::template trivialExporter<T>();
         }
     };
@@ -367,31 +367,36 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
 
         template <class T, class Writer>
         static std::shared_ptr<typename infra::RealTimeApp<Env>::template Exporter<T>>
-        createExporter(std::ostream &os, Writer &&writer, bool separateThread=false) {
+        createExporter(std::ostream &os, Writer &&writer, bool separateThread=false, bool flushImmediately=true) {
             class LocalENonThreaded final : public infra::RealTimeApp<Env>::template AbstractExporter<T> {
             private:
                 std::ostream *os_;
                 Writer writer_;
+                bool flushImmediately_;
             public:
-                LocalENonThreaded(std::ostream &os, Writer &&writer) : os_(&os), writer_(std::move(writer)) {}
+                LocalENonThreaded(std::ostream &os, Writer &&writer, bool flushImmediately) : os_(&os), writer_(std::move(writer)), flushImmediately_(flushImmediately) {}
                 virtual void start(Env *env) override final {
                     writer_.start(env, *os_);
                 }
                 virtual void handle(typename infra::RealTimeApp<Env>::template InnerData<T> &&d) override final {
                     TM_INFRA_EXPORTER_TRACER(d.environment);
+                    bool isFinal = d.timedData.finalFlag;
                     writer_.writeOne(d.environment, *os_, std::move(d.timedData));
-                    os_->flush();
+                    if (flushImmediately_ || isFinal) {
+                        os_->flush();
+                    }
                 }
             };
             class LocalEThreaded final : public infra::RealTimeApp<Env>::template AbstractExporter<T>, public infra::RealTimeAppComponents<Env>::template ThreadedHandler<T,LocalEThreaded> {
             private:
                 std::ostream *os_;
                 Writer writer_;
+                bool flushImmediately_;
             public:
             #ifdef _MSC_VER
-                LocalEThreaded(std::ostream &os, Writer &&writer) : os_(&os), writer_(std::move(writer)) {
+                LocalEThreaded(std::ostream &os, Writer &&writer, bool flushImmediately) : os_(&os), writer_(std::move(writer)), flushImmediately_(flushImmediately) {
             #else
-                LocalEThreaded(std::ostream &os, Writer &&writer) : infra::RealTimeAppComponents<Env>::template ThreadedHandler<T, LocalEThreaded>(), os_(&os), writer_(std::move(writer)) {
+                LocalEThreaded(std::ostream &os, Writer &&writer, bool flushImmediately) : infra::RealTimeAppComponents<Env>::template ThreadedHandler<T, LocalEThreaded>(), os_(&os), writer_(std::move(writer)), flushImmediately_(flushImmediately) {
             #endif
                     this->startThread();
                 }
@@ -401,16 +406,19 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
             public:
                 void actuallyHandle(typename infra::RealTimeApp<Env>::template InnerData<T> &&d) {
                     TM_INFRA_EXPORTER_TRACER(d.environment);
+                    bool isFinal = d.timedData.finalFlag;
                     writer_.writeOne(d.environment, *os_, std::move(d.timedData));
-                    os_->flush();
+                    if (flushImmediately_ || isFinal) {
+                        os_->flush();
+                    }
                 }
                 void idleWork() {}
                 void waitForStart() {}
             };
             if (separateThread) {
-                return infra::RealTimeApp<Env>::template exporter(new LocalEThreaded(os, std::move(writer)));
+                return infra::RealTimeApp<Env>::template exporter(new LocalEThreaded(os, std::move(writer), flushImmediately));
             } else {
-                return infra::RealTimeApp<Env>::template exporter(new LocalENonThreaded(os, std::move(writer)));
+                return infra::RealTimeApp<Env>::template exporter(new LocalENonThreaded(os, std::move(writer), flushImmediately));
             }
         }
     };
@@ -514,23 +522,27 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
 
         template <class T, class Writer>
         static std::shared_ptr<typename infra::SinglePassIterationApp<Env>::template Exporter<T>>
-        createExporter(std::ostream &os, Writer &&writer, bool separateThread=false) {
+        createExporter(std::ostream &os, Writer &&writer, bool separateThread=false, bool flushImmediately=true) {
             class LocalE final : public infra::SinglePassIterationApp<Env>::template AbstractExporter<T> {
             private:
                 std::ostream *os_;
                 Writer writer_;
+                bool flushImmediately_;
             public:
-                LocalE(std::ostream &os, Writer &&writer) : os_(&os), writer_(std::move(writer)) {}
+                LocalE(std::ostream &os, Writer &&writer, bool flushImmediately) : os_(&os), writer_(std::move(writer)), flushImmediately_(flushImmediately) {}
                 virtual void start(Env *env) override final {
                     writer_.start(env, *os_);
                 }
                 virtual void handle(typename infra::SinglePassIterationApp<Env>::template InnerData<T> &&d) override final {
                     TM_INFRA_EXPORTER_TRACER(d.environment);
+                    bool isFinal = d.timedData.finalFlag;
                     writer_.writeOne(d.environment, *os_, std::move(d.timedData));
-                    os_->flush();
+                    if (flushImmediately_ || isFinal) {
+                        os_->flush();
+                    }
                 }
             };
-            return infra::SinglePassIterationApp<Env>::template exporter(new LocalE(os, std::move(writer)));
+            return infra::SinglePassIterationApp<Env>::template exporter(new LocalE(os, std::move(writer), flushImmediately));
         }
     };
 
@@ -637,23 +649,27 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
 
         template <class T, class Writer>
         static std::shared_ptr<typename infra::TopDownSinglePassIterationApp<Env>::template Exporter<T>>
-        createExporter(std::ostream &os, Writer &&writer, bool separateThread=false) {
+        createExporter(std::ostream &os, Writer &&writer, bool separateThread=false, bool flushImmediately=true) {
             class LocalE final : public infra::TopDownSinglePassIterationApp<Env>::template AbstractExporter<T> {
             private:
                 std::ostream *os_;
                 Writer writer_;
+                bool flushImmediately_;
             public:
-                LocalE(std::ostream &os, Writer &&writer) : os_(&os), writer_(std::move(writer)) {}
+                LocalE(std::ostream &os, Writer &&writer, bool flushImmediately) : os_(&os), writer_(std::move(writer)), flushImmediately_(flushImmediately) {}
                 virtual void start(Env *env) override final {
                     writer_.start(env, *os_);
                 }
                 virtual void handle(typename infra::TopDownSinglePassIterationApp<Env>::template InnerData<T> &&d) override final {
                     TM_INFRA_EXPORTER_TRACER(d.environment);
+                    bool isFinal = d.timedData.finalFlag;
                     writer_.writeOne(d.environment, *os_, std::move(d.timedData));
-                    os_->flush();
+                    if (flushImmediately_ || isFinal) {
+                        os_->flush();
+                    }
                 }
             };
-            return infra::TopDownSinglePassIterationApp<Env>::template exporter(new LocalE(os, std::move(writer)));
+            return infra::TopDownSinglePassIterationApp<Env>::template exporter(new LocalE(os, std::move(writer), flushImmediately));
         }
     };
 
