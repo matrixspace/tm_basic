@@ -1,5 +1,6 @@
 tm_basic_sources = [
       'real_time_clock/Clock.cpp'
+    , 'real_time_clock/TscClock.cpp'
     , 'real_time_clock/ClockComponent.cpp'
     , 'single_pass_iteration_clock/Clock.cpp'
     , 'single_pass_iteration_clock/ClockComponent.cpp'
