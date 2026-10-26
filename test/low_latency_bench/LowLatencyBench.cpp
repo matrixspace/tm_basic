@@ -4,8 +4,8 @@
 #include <tm_kit/basic/ByteData.hpp>
 #include <tm_kit/basic/SpdLoggingComponent.hpp>
 #include <tm_kit/basic/real_time_clock/ClockComponent.hpp>
-// TscClockComponent lives in ClockComponent.hpp; probe its own header so the
-// bench still builds against a tm_basic without it (for before/after runs)
+//TscClockComponent lives in ClockComponent.hpp; probe its own header so the
+//bench still builds against a tm_basic without it (for before/after runs)
 #if __has_include(<tm_kit/basic/real_time_clock/TscClock.hpp>)
 #define LOW_LATENCY_BENCH_HAS_TSC_CLOCK 1
 #endif
@@ -24,14 +24,14 @@
 #include <string>
 #include <vector>
 
-// In-process micro benchmark of the per-message costs of the TM Kit realtime
-// hot path (importer publish -> Producer::publish -> exporter), and of the
-// building blocks it is made of (clock reads, TimeChecker, std::function).
+//In-process micro benchmark of the per-message costs of the TM Kit realtime
+//hot path (importer publish -> Producer::publish -> exporter), and of the
+//building blocks it is made of (clock reads, TimeChecker, std::function).
 //
-// Each sample brackets ONE call with lfence/rdtsc .. rdtscp/lfence; the
-// reported "net" value subtracts the p50 of an empty bracket. Results are
-// noisy when other processes run on the machine; pin with taskset and
-// compare variants of the same run only.
+//Each sample brackets ONE call with lfence/rdtsc .. rdtscp/lfence; the
+//reported "net" value subtracts the p50 of an empty bracket. Results are
+//noisy when other processes run on the machine; pin with taskset and
+//compare variants of the same run only.
 
 using namespace dev::cd606::tm;
 
@@ -62,8 +62,8 @@ namespace {
         nanosleep(&req, nullptr);
         clock_gettime(CLOCK_MONOTONIC_RAW, &b);
         uint64_t t1 = __rdtsc();
-        double ns = (b.tv_sec - a.tv_sec) * 1e9 + (b.tv_nsec - a.tv_nsec);
-        return static_cast<double>(t1 - t0) / ns;
+        double ns = (b.tv_sec-a.tv_sec)*1e9+(b.tv_nsec-a.tv_nsec);
+        return static_cast<double>(t1-t0)/ns;
     }
 
     struct Result {
@@ -84,30 +84,30 @@ namespace {
             sum += static_cast<double>(x);
         }
         auto at = [&d](double q) {
-            return static_cast<double>(d[static_cast<std::size_t>(q * static_cast<double>(d.size() - 1))]) / g_ghz;
+            return static_cast<double>(d[static_cast<std::size_t>(q*static_cast<double>(d.size()-1))])/g_ghz;
         };
-        return {at(0.5), at(0.9), at(0.99), sum / static_cast<double>(d.size()) / g_ghz};
+        return {at(0.5), at(0.9), at(0.99), sum/static_cast<double>(d.size())/g_ghz};
     }
 
     void print(char const *name, Result const &r) {
-        std::printf("%-58s p50 %7.1f  p90 %7.1f  p99 %7.1f  mean %7.1f  | net p50 %6.1f ns\n", name, r.p50, r.p90, r.p99, r.mean, r.p50 - g_emptyP50);
+        std::printf("%-58s p50 %7.1f  p90 %7.1f  p99 %7.1f  mean %7.1f  | net p50 %6.1f ns\n", name, r.p50, r.p90, r.p99, r.mean, r.p50-g_emptyP50);
         std::fflush(stdout);
     }
 
-    // before() runs outside the timed region, f() inside it
+    //before() runs outside the timed region, f() inside it
     template <class Before, class F>
     Result measure(char const *name, Before &&before, F &&f) {
         std::vector<uint64_t> d(g_n);
-        for (std::size_t ii = 0; ii < 20000; ++ii) {
+        for (std::size_t ii=0; ii<20000; ++ii) {
             before(ii);
             f(ii);
         }
-        for (std::size_t ii = 0; ii < g_n; ++ii) {
+        for (std::size_t ii=0; ii<g_n; ++ii) {
             before(ii);
             uint64_t t0 = stampBegin();
             f(ii);
             uint64_t t1 = stampEnd();
-            d[ii] = t1 - t0;
+            d[ii] = t1-t0;
         }
         auto r = summarize(d);
         print(name, r);
@@ -118,7 +118,7 @@ namespace {
         return measure(name, [](std::size_t) {}, std::forward<F>(f));
     }
 
-    // ------------------------------------------------------------ graph
+    //------------------------------------------------------------ graph
 
     template <class Clock, bool CheckTime>
     using BenchEnv = infra::Environment<
@@ -126,8 +126,8 @@ namespace {
 
     constexpr std::size_t kBatch = 4096;
 
-    // Keeps the moved-in strings alive until the end of the batch so that
-    // no free() happens inside the timed region.
+    //Keeps the moved-in strings alive until the end of the batch so that
+    //no free() happens inside the timed region.
     struct Pool {
         std::vector<std::string> slots = std::vector<std::string>(kBatch);
     };
@@ -152,7 +152,7 @@ namespace {
             : pool_(pool) {}
         virtual void start(typename M::EnvironmentType *) override final {}
         virtual void handle(typename M::template InnerData<basic::ByteDataWithTopic> &&d) override final {
-            pool_->slots[(idx_++) % kBatch] = std::move(d.timedData.value.content);
+            pool_->slots[(idx_++)%kBatch] = std::move(d.timedData.value.content);
         }
     };
 
@@ -177,13 +177,13 @@ namespace {
         } else {
             exp = M::template simpleExporter<basic::ByteDataWithTopic>(
                 [pool, idx = std::size_t(0)](typename M::template InnerData<basic::ByteDataWithTopic> &&d) mutable {
-                    pool->slots[(idx++) % kBatch] = std::move(d.timedData.value.content);
+                    pool->slots[(idx++)%kBatch] = std::move(d.timedData.value.content);
                 });
         }
         r->connect(r->importItem("src", imp), r->exporterAsSink("sink", exp));
         r->finalize();
 
-        // mimics a transport handing data to its importer through std::function
+        //mimics a transport handing data to its importer through std::function
         std::function<void(basic::ByteDataWithTopic &&)> cb = [src, env](basic::ByteDataWithTopic &&d) {
             src->push(env, std::move(d));
         };
@@ -191,7 +191,7 @@ namespace {
         measure(
             name,
             [&next, pool](std::size_t ii) {
-                if (ii % kBatch == 0) {
+                if (ii%kBatch == 0) {
                     for (auto &s : pool->slots) {
                         std::string().swap(s);
                     }
@@ -205,11 +205,11 @@ namespace {
                     src->push(env, std::move(next));
                 }
             });
-        // the graph (and its clock thread) is leaked on purpose: tearing down
-        // a finalized runner is not needed for a measurement
+        //the graph (and its clock thread) is leaked on purpose: tearing down
+        //a finalized runner is not needed for a measurement
     }
 
-    // ------------------------------------------------------------ pieces
+    //------------------------------------------------------------ pieces
 
     template <class Env, bool MutexProtected>
     void timeCheckerBench(char const *name) {
