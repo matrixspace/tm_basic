@@ -48,3 +48,4 @@ pkg = import('pkgconfig')
 
 subdir('tm_kit/basic')
 subdir('src')
+subdir('test')
