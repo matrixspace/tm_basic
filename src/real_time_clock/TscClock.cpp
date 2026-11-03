@@ -69,6 +69,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace rea
         , resyncs_(0)
         , steps_(0)
         , lastErrorNs_(0)
+        , lastFallbackNs_(INT64_MIN)
     {
 #ifdef TM_KIT_BASIC_TSC_CLOCK_HAS_RDTSC
         if (options_.forceSystemClock || !hasInvariantTsc()) {
@@ -117,11 +118,14 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace rea
         lastErrorNs_.store(err, std::memory_order_relaxed);
 
         if (std::llabs(err) > options_.stepThreshold.count() || tsc <= calTsc_ || sysNs <= calNs_) {
-            //system_clock jumped (or was set): follow it and restart the rate
-            //estimate from here, keeping the last known rate meanwhile
+            //system_clock jumped (or was set), or the sample cannot extend the
+            //rate baseline: restart the rate estimate from here, keeping the
+            //last known rate meanwhile. anchor at max(cur,sysNs) so that a
+            //backward jump of system_clock is ignored instead of stepping the
+            //clock back: readings must never decrease
             calTsc_ = tsc;
             calNs_ = sysNs;
-            anchor(tsc, sysNs, 1.0/ticksPerNs_.load(std::memory_order_relaxed));
+            anchor(tsc, std::max(cur, sysNs), 1.0/ticksPerNs_.load(std::memory_order_relaxed));
             steps_.fetch_add(1, std::memory_order_relaxed);
         } else {
             //long-baseline rate estimate, then slew so that err is absorbed

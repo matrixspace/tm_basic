@@ -12,6 +12,12 @@
 
 namespace dev { namespace cd606 { namespace tm { namespace basic { namespace real_time_clock {
 
+    class TscClock;
+    //test-only access to the clock's internal state (defined by the tests);
+    //it lets a test put the map in a state that a real system_clock jump
+    //would produce, without touching the machine's clock
+    struct TscClockTestAccess;
+
     //Wall clock (system_clock epoch, nanoseconds) derived from the TSC.
     //
     //A reading is rdtsc plus a seqlock-protected linear map
@@ -22,14 +28,24 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace rea
     //that finds more than resyncInterval since the anchor does the re-sync
     //(one paired system_clock read, ~100ns once per interval; other threads
     //keep using the old map meanwhile). The re-sync keeps the clock
-    //continuous and slews it towards system_clock (bounded by maxSlewPpm),
-    //so within one thread readings never go backwards unless system_clock
-    //itself jumped by more than stepThreshold, in which case the clock steps
-    //to the new system time, like system_clock does.
+    //continuous and slews it towards system_clock (bounded by maxSlewPpm).
     //
-    //If the CPU has no invariant TSC (or this is not x86-64), every reading
-    //is simply std::chrono::system_clock::now().
+    //Readings are guaranteed to be non-decreasing. A re-sync never anchors
+    //the map below the value it already has at that tick, so a backward
+    //adjustment of system_clock (NTP step, manual set) is not followed: the
+    //clock keeps its current rate and stays ahead until system time catches
+    //up again. A forward jump larger than stepThreshold is followed by
+    //stepping forward, which preserves monotonicity. The map is continuous,
+    //so concurrent readers are ordered consistently with their TSC ticks as
+    //well (as long as the TSC is synchronized across cores, which the
+    //invariant-TSC machines this path targets provide).
+    //
+    //If the CPU has no invariant TSC (or this is not x86-64), readings come
+    //from std::chrono::system_clock::now(), clamped against the highest
+    //value the instance already returned, so the fallback is non-decreasing
+    //too (at the cost of one atomic per reading).
     class TscClock {
+        friend struct TscClockTestAccess;
     public:
         struct Options {
             std::chrono::nanoseconds resyncInterval = std::chrono::milliseconds(100);
@@ -62,9 +78,24 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace rea
         std::atomic<uint64_t> steps_;
         std::atomic<int64_t> lastErrorNs_;
 
+        //written by every reader on the fallback path: the highest value
+        //handed out so far, so that system_clock adjustments cannot make
+        //the fallback go backwards
+        std::atomic<int64_t> lastFallbackNs_;
+
         //returns true if the map was re-anchored (by us)
         bool resync(uint64_t expectedSeq);
         void anchor(uint64_t tsc, int64_t ns, double nsPerTick);
+        inline int64_t fallbackNowNs() {
+            int64_t const v = systemNowNs();
+            int64_t last = lastFallbackNs_.load(std::memory_order_relaxed);
+            while (v > last) {
+                if (lastFallbackNs_.compare_exchange_weak(last, v, std::memory_order_relaxed)) {
+                    return v;
+                }
+            }
+            return last;
+        }
     public:
         TscClock();
         explicit TscClock(Options const &options);
@@ -115,7 +146,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace rea
                 }
             }
 #endif
-            return systemNowNs();
+            return fallbackNowNs();
         }
         inline std::chrono::system_clock::time_point now() {
             return std::chrono::system_clock::time_point(

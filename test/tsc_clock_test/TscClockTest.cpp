@@ -18,11 +18,39 @@
 //  2. accuracy against system_clock over ~3s (covers ~30 re-syncs): the
 //     error of every sample is bracketed by two system_clock reads
 //  3. per-thread monotonicity with 4 reader threads across re-syncs
-//  4. forceSystemClock fallback
-//  5. per-call cost compared with system_clock::now()
-//  6. TscClockComponent: resolveTime() is real time (not the epoch)
+//  4. monotonicity when every re-sync takes the step branch (system_clock
+//     apparently behind the clock half of the time)
+//  5. a backward error larger than stepThreshold does not step the clock
+//     back (deterministic, using the white-box test access)
+//  6. forceSystemClock fallback, including its monotonicity across threads
+//     and its high-water mark after a backward system_clock adjustment
+//  7. per-call cost compared with system_clock::now()
+//  8. TscClockComponent: resolveTime() is real time (not the epoch)
 
 using namespace dev::cd606::tm::basic::real_time_clock;
+
+//white-box access used only by the tests: puts the map into the state a real
+//system_clock jump would produce, without changing the machine's clock
+namespace dev { namespace cd606 { namespace tm { namespace basic { namespace real_time_clock {
+    struct TscClockTestAccess {
+        static void moveAhead(TscClock &c, int64_t aheadNs) {
+            c.baseNs_.store(c.baseNs_.load(std::memory_order_relaxed)+aheadNs, std::memory_order_relaxed);
+        }
+        //move the anchor back without changing the mapped value of any tick,
+        //so the next read finds d >= resyncTicks_ and re-syncs immediately
+        static void makeResyncDue(TscClock &c) {
+            double const nsPerTick = 1.0/c.ticksPerNs_.load(std::memory_order_relaxed);
+            uint64_t const shift = c.resyncTicks_+1000;
+            uint64_t const bt = c.baseTsc_.load(std::memory_order_relaxed);
+            int64_t const bn = c.baseNs_.load(std::memory_order_relaxed);
+            c.baseTsc_.store(bt-shift, std::memory_order_relaxed);
+            c.baseNs_.store(bn-static_cast<int64_t>(static_cast<double>(shift)*nsPerTick), std::memory_order_relaxed);
+        }
+        static void setFallbackFloor(TscClock &c, int64_t ns) {
+            c.lastFallbackNs_.store(ns, std::memory_order_relaxed);
+        }
+    };
+} } } } }
 
 namespace {
 
@@ -78,12 +106,12 @@ namespace {
         check(absErr.back() <= 50000, "max |error| <= 50us");
     }
 
-    void testMonotonic(TscClock &c) {
-        constexpr int kThreads = 4;
+    //runs kThreads readers for the given duration; returns the number of
+    //readings that were lower than the previous reading on the same thread
+    int64_t runReaders(TscClock &c, int kThreads, std::chrono::steady_clock::duration duration, int64_t &totalReads) {
         std::atomic<bool> stop{false};
         std::vector<int64_t> backwards(kThreads, 0), reads(kThreads, 0);
         std::vector<std::thread> threads;
-        uint64_t resyncsBefore = c.stats().resyncs;
         for (int k=0; k<kThreads; ++k) {
             threads.emplace_back([&, k]() {
                 int64_t last = c.nowNs();
@@ -97,18 +125,75 @@ namespace {
                 }
             });
         }
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::this_thread::sleep_for(duration);
         stop = true;
         for (auto &t : threads) {
             t.join();
         }
-        int64_t b = 0, n = 0;
+        int64_t b = 0;
+        totalReads = 0;
         for (int k=0; k<kThreads; ++k) {
             b += backwards[k];
-            n += reads[k];
+            totalReads += reads[k];
         }
-        std::cout << "      " << n << " reads on " << kThreads << " threads, " << (c.stats().resyncs-resyncsBefore) << " re-syncs meanwhile" << std::endl;
+        return b;
+    }
+
+    void testMonotonic(TscClock &c) {
+        constexpr int kThreads = 4;
+        uint64_t resyncsBefore = c.stats().resyncs;
+        int64_t reads = 0;
+        int64_t b = runReaders(c, kThreads, std::chrono::seconds(2), reads);
+        std::cout << "      " << reads << " reads on " << kThreads << " threads, " << (c.stats().resyncs-resyncsBefore) << " re-syncs meanwhile" << std::endl;
         check(b == 0, "per-thread readings never go backwards across re-syncs");
+    }
+
+    //a 1ns threshold makes nearly every re-sync take the step branch, and the
+    //paired samples then fall on both sides of the current mapping, so the
+    //backward case (system_clock behind the clock) is exercised constantly:
+    //the clock must stay where it is, not step back
+    void testMonotonicAcrossSteps() {
+        TscClock::Options o;
+        o.resyncInterval = std::chrono::milliseconds(1);
+        o.stepThreshold = std::chrono::nanoseconds(1);
+        TscClock c(o);
+        if (!c.usesTsc()) {
+            check(false, "step test needs the TSC path");
+            return;
+        }
+        int64_t reads = 0;
+        int64_t b = runReaders(c, 2, std::chrono::seconds(1), reads);
+        auto st = c.stats();
+        std::cout << "      " << reads << " reads, " << st.resyncs << " re-syncs, " << st.steps << " steps, last error "
+                  << st.lastErrorNs << "ns" << std::endl;
+        check(b == 0, "readings never go backwards when re-syncs step");
+        check(st.steps >= 100, "step branch exercised (>=100 steps in 1s)");
+    }
+
+    //put the map 100us ahead of system_clock (as a backward system_clock
+    //adjustment would leave it relative to a clock already read at that
+    //value) and let the next read re-sync: the error is far beyond
+    //stepThreshold, and the clock must stay where it is instead of stepping
+    //back to system time
+    void testBackwardErrorDoesNotStepBack() {
+        TscClock::Options o;
+        o.stepThreshold = std::chrono::microseconds(10);
+        o.resyncInterval = std::chrono::seconds(1);
+        TscClock c(o);
+        if (!c.usesTsc()) {
+            check(false, "backward-step test needs the TSC path");
+            return;
+        }
+        TscClockTestAccess::moveAhead(c, 100000);
+        int64_t const v0 = c.nowNs();
+        TscClockTestAccess::makeResyncDue(c);
+        uint64_t const stepsBefore = c.stats().steps;
+        int64_t const v1 = c.nowNs();
+        auto st = c.stats();
+        std::cout << "      backward error " << st.lastErrorNs << "ns at re-sync, reading delta " << (v1-v0) << "ns" << std::endl;
+        check(st.steps == stepsBefore+1, "re-sync took the step branch");
+        check(st.lastErrorNs <= -50000, "re-sync saw the backward error");
+        check(v1 >= v0, "a backward system_clock error does not move the clock back");
     }
 
     void testFallback() {
@@ -119,6 +204,20 @@ namespace {
         int64_t t = c.nowNs();
         int64_t b = sysNs();
         check(!c.usesTsc() && t >= a && t <= b, "forceSystemClock falls back to system_clock");
+
+        int64_t reads = 0;
+        int64_t bwd = runReaders(c, 4, std::chrono::seconds(1), reads);
+        std::cout << "      " << reads << " fallback reads on 4 threads" << std::endl;
+        check(bwd == 0, "fallback readings never go backwards");
+
+        //set the high-water mark into the future, as a backward system_clock
+        //adjustment would: readings must not drop below the values already
+        //handed out
+        int64_t const floor = sysNs()+std::chrono::milliseconds(1).count();
+        TscClockTestAccess::setFallbackFloor(c, floor);
+        int64_t const t2 = c.nowNs();
+        check(t2 >= floor, "fallback never returns below its high-water mark");
+        check(c.nowNs() >= t2, "fallback readings stay non-decreasing");
     }
 
     template <class F>
@@ -163,6 +262,8 @@ int main() {
     if (c.usesTsc()) {
         testAccuracy(c);
         testMonotonic(c);
+        testMonotonicAcrossSteps();
+        testBackwardErrorDoesNotStepBack();
         testCost(c);
     }
     testFallback();
