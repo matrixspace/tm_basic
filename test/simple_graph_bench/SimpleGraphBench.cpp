@@ -77,7 +77,8 @@ namespace {
         bool threadedSrc;
     };
 
-    void runVariant(Variant const &v, int64_t messages) {
+    bool runVariant(Variant const &v, int64_t messages)
+    {
         auto *env = new Env(); //leaked: detached node threads outlive main
         auto *r = new R(env);
         auto *src = new PushSource<int64_t>();
@@ -160,30 +161,18 @@ namespace {
             M::template Key<int64_t> k {i};
             fire(std::move(k));
         }
-        //drain: poll until both sinks have been quiet for a while, and take
-        //the time of the LAST count change as the end of the measured period,
-        //so the quiet window itself is not charged to the messages. A fixed
-        //expected count would truncate the run: the fan-out depth depends on
-        //how many items the maybe step keeps.
-        int64_t lastA = sinkA->count.load();
-        int64_t lastB = sinkB->count.load();
-        auto wallEnd = std::chrono::steady_clock::now();
-        int quietMs = 0;
-        auto const deadline = wallEnd+std::chrono::seconds(120);
-        while (quietMs < 100 && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            int64_t const a = sinkA->count.load();
-            int64_t const b = sinkB->count.load();
-            if (a != lastA || b != lastB) {
-                lastA = a;
-                lastB = b;
-                wallEnd = std::chrono::steady_clock::now();
-                quietMs = 0;
-            } else {
-                quietMs += 5;
-            }
+        // The graph deterministically keeps messages-messages/3 inputs,
+        // emits two multi items and dispatches each to two join inputs.
+        // Finish on exact counts; a quiet window can end early on a stalled
+        // graph and charged background CPU after all messages had completed.
+        int64_t const expectA = 4 * (messages - messages / 3);
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+        while ((sinkA->count.load() - baseA < expectA || sinkB->count.load() - baseB < messages) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
+        auto const wallEnd = std::chrono::steady_clock::now();
         auto const cpuEnd = std::clock();
+        bool const ok = sinkA->count.load() - baseA == expectA && sinkB->count.load() - baseB == messages && sinkA->bad.load() + sinkB->bad.load() == 0;
 
         double const wallNs = std::chrono::duration<double, std::nano>(wallEnd-wallBegin).count();
         double const cpuNs = 1e9*static_cast<double>(cpuEnd-cpuBegin)/CLOCKS_PER_SEC;
@@ -195,18 +184,33 @@ namespace {
             //kpush/s = messages / wall seconds / 1000 = messages / wall ms
             , wallNs/messages, cpuNs/messages, static_cast<double>(messages)/(wallNs/1e6));
         std::fflush(stdout);
+        if (!ok) {
+            std::fprintf(stderr, "graph did not deliver exact expected counts\n");
+        }
         //graph leaked on purpose: detached threads and the clock thread
+        return ok;
     }
-
 }
 
 int main(int argc, char **argv) {
     int64_t const messages = (argc > 1) ? std::atoll(argv[1]) : 200000;
     std::printf("RealTimeApp graph overhead, graph: pure -> maybe -> multi -> split -> dispatch -> join (+ on-order facility)\n");
     std::printf("messages per variant: %lld\n", static_cast<long long>(messages));
-    runVariant({"plain", false, false, false}, messages);
-    runVariant({"src threaded", true, false, false}, messages);
-    runVariant({"action+facility threaded", true, true, false}, messages);
-    runVariant({"src+action+facility", true, true, true}, messages);
-    return 0;
+    if (messages <= 0 || messages > 100000000) {
+        return 2;
+    }
+    // Optional argv[2] isolates one graph in its own process for profiling.
+    std::string selected = argc > 2 ? argv[2] : "all";
+    bool ok = true, matched = false;
+    for (auto const &v :
+         {Variant{"plain", false, false, false},
+          Variant{"src threaded", true, false, false},
+          Variant{"action+facility threaded", true, true, false},
+          Variant{"src+action+facility", true, true, true}}) {
+        if (selected == "all" || selected == v.name) {
+            matched = true;
+            ok = runVariant(v, messages) && ok;
+        }
+    }
+    return matched ? (ok ? 0 : 1) : 2;
 }
