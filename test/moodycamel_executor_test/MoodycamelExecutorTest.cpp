@@ -22,7 +22,6 @@
 //  1. executor selection from the environment
 //  2. ThreadedHandler, several producers: nothing lost / duplicated,
 //     per-producer order kept, callbacks never overlap
-//  3. BusyLoopThreadedHandler, same checks
 //  4. stop() from inside actuallyHandle: no further item is handled,
 //     later pushes are dropped
 //  5. idle work: periodic while hasIdleWork() is true, none while it is
@@ -97,14 +96,10 @@ namespace {
     void testSelection() {
         using Dflt = TestEnv<false, false>;
         using Mc = TestEnv<false, true>;
-        constexpr bool d = std::is_same_v<infra::RealTimeThreadedExecutorFor<Dflt, int, infra::ThreadedExecMode::Blocking>
-            , infra::DedicatedThreadExecutor<int, infra::ThreadedExecMode::Blocking>>;
-        constexpr bool m1 = std::is_same_v<infra::RealTimeThreadedExecutorFor<Mc, int, infra::ThreadedExecMode::Blocking>
-            , basic::MoodycamelThreadedExecutor<int, infra::ThreadedExecMode::Blocking>>;
-        constexpr bool m2 = std::is_same_v<infra::RealTimeThreadedExecutorFor<Mc, int, infra::ThreadedExecMode::BusyLoop>
-            , basic::MoodycamelThreadedExecutor<int, infra::ThreadedExecMode::BusyLoop>>;
+        constexpr bool d = std::is_same_v<infra::RealTimeThreadedExecutorFor<Dflt, int>, infra::DedicatedThreadExecutor<int>>;
+        constexpr bool m1 = std::is_same_v<infra::RealTimeThreadedExecutorFor<Mc, int>, basic::MoodycamelThreadedExecutor<int>>;
         check(d, "default environment selects DedicatedThreadExecutor");
-        check(m1 && m2, "moodycamel environment selects MoodycamelThreadedExecutor (Blocking and BusyLoop)");
+        check(m1, "moodycamel environment selects MoodycamelThreadedExecutor");
     }
 
     //---- shared bookkeeping for handler tests
@@ -181,31 +176,6 @@ namespace {
         }
     };
 
-    template <class Env>
-    class TestBusyHandler final : public infra::RealTimeAppComponents<Env>::template BusyLoopThreadedHandler<int64_t, TestBusyHandler<Env>> {
-    private:
-        Stats *st_;
-        int64_t kPer_;
-    public:
-        TestBusyHandler(Stats *st, int64_t kPer)
-            : infra::RealTimeAppComponents<Env>::template BusyLoopThreadedHandler<int64_t, TestBusyHandler<Env>>(false)
-            , st_(st), kPer_(kPer) {
-            this->startThread();
-        }
-        void waitForStart() {
-            ++st_->started;
-        }
-        void actuallyHandle(infra::TimedDataWithEnvironment<int64_t, Env, TP> &&d) {
-            st_->onItem(d.timedData.value, kPer_);
-        }
-        void idleWork() {
-            ++st_->idle;
-        }
-        void stopNow() {
-            this->stop();
-        }
-    };
-
     //producers call IHandler::handle directly, as upstream nodes do
     template <class Env, class H>
     void produce(Env *env, H *h, int producers, int64_t kPer, bool increasingTime = false) {
@@ -245,27 +215,6 @@ namespace {
         (void) h;
     }
 
-    //---- 3. BusyLoopThreadedHandler, several producers
-    template <bool Pool>
-    void testBusyLoopMultiProducer() {
-        using Env = TestEnv<false, Pool>;
-        Env &env = *new Env(); //leaked: detached handler threads may still use it
-        constexpr int kProd = 4;
-        constexpr int64_t kPer = 50000;
-        //leaked with the handler: its detached thread may still touch it
-        Stats &st = *new Stats();
-        auto *h = new TestBusyHandler<Env>(&st, kPer);
-        produce(&env, h, kProd, kPer);
-        bool all = waitUntil([&]() {return st.handled.load() >= kProd*kPer;});
-        std::string tag = tagOf(Pool);
-        check(all && st.handled.load() == kProd*kPer, "busy loop handler: all items handled once" + tag);
-        check(st.dup.load() == 0 && st.orderErr.load() == 0 && st.overlap.load() == 0, "busy loop handler: order kept, no overlap" + tag);
-        check(h->threadHandle().has_value(), "busy loop handler: owns a thread" + tag);
-        h->stopNow();
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        //leaked on purpose: the handler thread is detached (pre-existing lifecycle, see task record)
-        (void) h;
-    }
 
     //---- 4. stop() from inside actuallyHandle
     template <bool Pool>
@@ -494,8 +443,6 @@ int main() {
     testSelection();
     testThreadedMultiProducer<false>();
     testThreadedMultiProducer<true>();
-    testBusyLoopMultiProducer<false>();
-    testBusyLoopMultiProducer<true>();
     testStopInsideCallback<false>();
     testStopInsideCallback<true>();
     testIdleWork<false>();

@@ -10,6 +10,7 @@
 #include <tm_kit/basic/simple_shared_chain/ChainPollingPolicy.hpp>
 #include <tm_kit/basic/VoidStruct.hpp>
 #include <tm_kit/basic/NotConstructibleStruct.hpp>
+#include <list>
 #include <chrono>
 #include <thread>
 #include <mutex>
@@ -19,6 +20,197 @@
 #include <boost/hana/type.hpp>
 
 namespace dev { namespace cd606 { namespace tm { namespace basic { namespace simple_shared_chain {
+                    namespace chain_writer_detail
+                    {
+                        // Local loops copied from tm_infra 6836234^; detached lifecycle retained.
+                        template <class Env, class Item, class W>
+                        class ThreadedHandler : public infra::IRealTimeAppPossiblyThreadedNode, public virtual infra::RealTimeAppComponents<Env>::template IHandler<Item> {
+                        private:
+                            std::mutex mutex_;
+                            std::condition_variable cond_;
+                            std::thread th_;
+                            std::atomic<bool> running_;
+                            std::list<infra::TimedDataWithEnvironment<Item, Env, typename Env::TimePointType>> incoming_, processing_;
+
+                            void stopThread()
+                            {
+                                {
+                                    std::lock_guard<std::mutex> _(mutex_);
+                                    running_ = false;
+                                }
+                                cond_.notify_one();
+                            }
+                            void runThread()
+                            {
+                                static_cast<W *>(this)->waitForStart();
+                                while (running_) {
+                                    {
+                                        std::unique_lock<std::mutex> lock(mutex_);
+                                        bool const ready = cond_.wait_for(lock, std::chrono::milliseconds(1), [this] { return !running_ || !incoming_.empty(); });
+                                        if (!running_) {
+                                            lock.unlock();
+                                            return;
+                                        }
+                                        if (incoming_.empty()) {
+                                            lock.unlock();
+                                            if (!ready) {
+                                                static_cast<W *>(this)->idleWork();
+                                            }
+                                            continue;
+                                        }
+                                        processing_.splice(processing_.end(), incoming_);
+                                        lock.unlock();
+                                        if constexpr (std::is_convertible_v<Env *, infra::OutputRealTimeThreadBufferSizeComponent *>) {
+                                            std::ostringstream oss;
+                                            oss << "Thread buffer for " << std::this_thread::get_id() << " size: " << processing_.size();
+                                            processing_.front().environment->log(infra::LogLevel::Debug, oss.str());
+                                        }
+                                    }
+                                    while (!processing_.empty()) {
+                                        auto &data = processing_.front();
+                                        static_cast<W *>(this)->actuallyHandle(std::move(data));
+                                        processing_.pop_front();
+                                    }
+                                }
+                            }
+
+                        public:
+                            ThreadedHandler()
+                                : mutex_()
+                                , cond_()
+                                , th_()
+                                , running_(false)
+                                , incoming_()
+                                , processing_()
+                            {
+                            }
+                            virtual ~ThreadedHandler()
+                            {
+                                stopThread();
+                                try {
+                                    if (th_.joinable()) {
+                                        th_.join();
+                                    }
+                                } catch (...) {
+                                }
+                            }
+                            void startThread()
+                            {
+                                running_ = true;
+                                th_ = std::thread(&ThreadedHandler::runThread, this);
+                                th_.detach();
+                            }
+                            virtual std::optional<std::thread::native_handle_type> threadHandle() override final
+                            {
+                                return th_.native_handle();
+                            }
+
+                        public:
+                            void handle(infra::TimedDataWithEnvironment<Item, Env, typename Env::TimePointType> &&data) override final
+                            {
+                                if (running_) {
+                                    {
+                                        std::lock_guard<std::mutex> _(mutex_);
+                                        incoming_.push_back(std::move(data));
+                                    }
+                                    cond_.notify_one();
+                                }
+                            }
+                            void stop()
+                            {
+                                stopThread();
+                            }
+                        };
+
+                        template <class Env, class Item, class W>
+                        class BusyLoopThreadedHandler : public infra::IRealTimeAppPossiblyThreadedNode, public virtual infra::RealTimeAppComponents<Env>::template IHandler<Item> {
+                        private:
+                            bool noYield_;
+                            std::mutex mutex_;
+                            std::thread th_;
+                            std::atomic<bool> running_;
+                            std::list<infra::TimedDataWithEnvironment<Item, Env, typename Env::TimePointType>> incoming_, processing_;
+
+                            void stopThread()
+                            {
+                                running_ = false;
+                            }
+                            void runThread()
+                            {
+                                static_cast<W *>(this)->waitForStart();
+                                while (running_) {
+                                    static_cast<W *>(this)->idleWork();
+                                    {
+                                        std::lock_guard<std::mutex> _(mutex_);
+                                        if (!incoming_.empty()) {
+                                            processing_.splice(processing_.end(), incoming_);
+                                        }
+                                    }
+                                    if constexpr (std::is_convertible_v<Env *, infra::OutputRealTimeThreadBufferSizeComponent *>) {
+                                        if (!processing_.empty()) {
+                                            std::ostringstream oss;
+                                            oss << "Thread buffer for " << std::this_thread::get_id() << " size: " << processing_.size();
+                                            processing_.front().environment->log(infra::LogLevel::Debug, oss.str());
+                                        }
+                                    }
+                                    while (!processing_.empty()) {
+                                        auto &data = processing_.front();
+                                        static_cast<W *>(this)->actuallyHandle(std::move(data));
+                                        processing_.pop_front();
+                                    }
+                                    if (!noYield_) {
+                                        std::this_thread::yield();
+                                    }
+                                }
+                            }
+
+                        public:
+                            BusyLoopThreadedHandler(bool noYield = false)
+                                : noYield_(noYield)
+                                , mutex_()
+                                , th_()
+                                , running_(false)
+                                , incoming_()
+                                , processing_()
+                            {
+                            }
+                            virtual ~BusyLoopThreadedHandler()
+                            {
+                                stopThread();
+                                try {
+                                    if (th_.joinable()) {
+                                        th_.join();
+                                    }
+                                } catch (...) {
+                                }
+                            }
+                            void startThread()
+                            {
+                                running_ = true;
+                                th_ = std::thread(&BusyLoopThreadedHandler::runThread, this);
+                                th_.detach();
+                            }
+                            virtual std::optional<std::thread::native_handle_type> threadHandle() override final
+                            {
+                                return th_.native_handle();
+                            }
+
+                        public:
+                            void handle(infra::TimedDataWithEnvironment<Item, Env, typename Env::TimePointType> &&data) override final
+                            {
+                                if (running_) {
+                                    std::lock_guard<std::mutex> _(mutex_);
+                                    incoming_.push_back(std::move(data));
+                                }
+                            }
+                            void stop()
+                            {
+                                stopThread();
+                            }
+                        };
+
+                    } // namespace chain_writer_detail
+
     template <class App, class Chain, class ChainItemFolder, class InputHandler, class IdleLogic=void>
     class ChainWriter {};
 
@@ -469,11 +661,14 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace sim
             }
         }
         friend class InnerHandler1;
-        class InnerHandler1 : public infra::RealTimeAppComponents<Env>::template ThreadedHandler<typename infra::RealTimeApp<Env>::template Key<typename InputHandler::InputType>, InnerHandler1> {
+        class InnerHandler1 : public chain_writer_detail::ThreadedHandler<Env, typename infra::RealTimeApp<Env>::template Key<typename InputHandler::InputType>, InnerHandler1> {
         private:
             ChainWriter *parent_;
         public:
-            InnerHandler1(ChainWriter *parent) : infra::RealTimeAppComponents<Env>::template ThreadedHandler<typename infra::RealTimeApp<Env>::template Key<typename InputHandler::InputType>, InnerHandler1>(), parent_(parent) {
+            InnerHandler1(ChainWriter *parent)
+                : chain_writer_detail::ThreadedHandler<Env, typename infra::RealTimeApp<Env>::template Key<typename InputHandler::InputType>, InnerHandler1>()
+                , parent_(parent)
+            {
                 this->startThread();
             }
             virtual ~InnerHandler1() {}
@@ -488,11 +683,14 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace sim
             }
         };
         friend class InnerHandler2;
-        class InnerHandler2 : public infra::RealTimeAppComponents<Env>::template BusyLoopThreadedHandler<typename infra::RealTimeApp<Env>::template Key<typename InputHandler::InputType>, InnerHandler2> {
+        class InnerHandler2 : public chain_writer_detail::BusyLoopThreadedHandler<Env, typename infra::RealTimeApp<Env>::template Key<typename InputHandler::InputType>, InnerHandler2> {
         private:
             ChainWriter *parent_;
         public:
-            InnerHandler2(ChainWriter *parent) : infra::RealTimeAppComponents<Env>::template BusyLoopThreadedHandler<typename infra::RealTimeApp<Env>::template Key<typename InputHandler::InputType>, InnerHandler2>(parent->noYield_), parent_(parent) {
+            InnerHandler2(ChainWriter *parent)
+                : chain_writer_detail::BusyLoopThreadedHandler<Env, typename infra::RealTimeApp<Env>::template Key<typename InputHandler::InputType>, InnerHandler2>(parent->noYield_)
+                , parent_(parent)
+            {
                 this->startThread();
             }
             virtual ~InnerHandler2() {}
