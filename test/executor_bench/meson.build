@@ -26,3 +26,9 @@ foreach index : range(engine_names.length())
             install: false)
     endforeach
 endforeach
+
+executable('executor_latency_bench', 'ExecutorLatencyBench.cpp',
+    include_directories: inc,
+    dependencies: common_deps,
+    build_by_default: false,
+    install: false)

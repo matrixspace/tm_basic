@@ -116,3 +116,57 @@ for exact expected counts and measures CPU to completion, rather than through
 a quiet window. Its former "src threaded" initializer selected the action
 flag by mistake; this is corrected and runtime action-mode checks were added.
 Do not compare that historical row by label without accounting for this fix.
+
+## End-to-end pipelines
+
+Build the manual target `test/executor_bench/executor_latency_bench` with
+`ninja -j2`. This is a separate single-producer linear pipeline. Each item keeps
+its original timestamp across every executor hop; only the last host measures
+latency. Every stage checks exact count and FIFO. `--hops 1|4|8` changes thread
+boundaries; pool stages share workers. Inline uses the identical topology and
+its typed submission path.
+
+```sh
+taskset -c 20-27 builddir_release/test/executor_bench/executor_latency_bench \
+  --executor dedicated --hops 4 --messages 20000 --spin-us 200 \
+  --producer-cpu 20 --consumer-cpu 24
+python3 test/executor_bench/run_latency.py \
+  --baseline /tmp/executor-latency-final-baseline \
+  --candidate builddir_release/test/executor_bench/executor_latency_bench \
+  --output /tmp/executor-latency-final --repeats 5
+```
+
+`--spin-us` explicitly overrides both executor/pool active-wait policy in this
+tool; zero restores blocking. Production defaults are separate from this tool's
+zero default. Consumer stage i uses consumer-cpu + i%4, and pool worker i uses
+consumer-cpu + i%4; select allowed physical CPUs, ideally separate from producer.
+Use `--consumer-cpus 24,26,28,30,32,34,36,38` for an explicit list instead of
+the default four-CPU cycle. Validate physical core/NUMA placement on your machine;
+the runner accepts the same option and an enclosing `--cpus` mask.
+The runner records actual binary hashes and alternates randomized process order.
+Build the **same final source** with original headers and
+`-DEXECUTOR_LATENCY_BASELINE=1` before production changes; this build accepts only
+spin-us=0. Do not compare different measurement loops.
+
+Default mode `closed` waits for terminal acknowledgement, then submits the next
+item. Optional interval-us sleeps after each completion, isolating cold wakeups
+without queue buildup. The producer uses pause while awaiting acknowledgement;
+its CPU is reported separately. `--mode periodic --interval-us 50` uses absolute
+scheduled arrivals, does not await each completion, and can build a queue.
+The JSON reports actual submit-to-terminal p50/p99/p999, scheduled-arrival p99,
+and producer-lateness p99 so missed scheduling deadlines are visible. Increasing
+arrival rate beyond service capacity increases latency; this is not a wakeup
+measurement. Periodic mode with interval zero submits a saturation burst.
+
+Items carry three uint64 fields without business allocations. Sample storage is
+preallocated and final sorting occurs outside measurement. Clock reads and the
+pipeline forwarding call are included equally in Inline. The pipeline model
+isolates executor boundaries; it does not replace RealTimeApp graph integration
+or the concurrent multi-producer correctness suite. Report sample count and CPU
+alongside latency; 5000 samples do not support a stable extreme-tail guarantee.
+
+The runner optionally accepts `--idle-baseline` and `--idle-candidate`, pointing
+to the corresponding generic executor_bench binaries. It then appends a separate
+128-node idle comparison (300 ms, with/without idle callbacks), retaining
+idle.jsonl and idle-summary.md. These cases check that active waiting stops;
+they do not contribute to latency percentiles.

@@ -112,12 +112,33 @@ namespace dev
                     {
                         h->executorWaitForStart();
                         std::vector<Slot> buf(kBulk);
+                        bool recentlyActive = false;
                         while (s->running.load(std::memory_order_acquire)) {
                             //drain without blocking first, then wait
                             std::size_t n = s->queue.try_dequeue_bulk(buf.begin(), kBulk);
                             if (n == 0) {
-                                if (h->executorHasIdleWork()) {
-                                    auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(1)).count();
+                                bool const hasIdle = h->executorHasIdleWork();
+                                auto const idleDeadline = hasIdle ? std::chrono::steady_clock::now() + std::chrono::milliseconds(1) : std::chrono::steady_clock::time_point::max();
+                                auto budget = s->opts.spinWait;
+                                if (hasIdle) {
+                                    budget = std::min(budget, std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds(1)));
+                                }
+                                if (recentlyActive) {
+                                    infra::realtime_threaded_executor_detail::spinUntil(budget, [&] {
+                                        if (!s->running.load(std::memory_order_acquire)) {
+                                            return true;
+                                        }
+                                        n = s->queue.try_dequeue_bulk(buf.begin(), kBulk);
+                                        return n != 0;
+                                    });
+                                }
+                                if (!s->running.load(std::memory_order_acquire)) {
+                                    return;
+                                }
+                                if (n != 0) {
+                                    // Consume the batch obtained during the bounded active wait.
+                                } else if (hasIdle) {
+                                    auto us = std::chrono::duration_cast<std::chrono::microseconds>(idleDeadline - std::chrono::steady_clock::now()).count();
                                     n = s->queue.wait_dequeue_bulk_timed(buf.begin(), kBulk, us > 0 ? us : 1);
                                 } else {
                                     //no idle work: block until an item or a wake token
@@ -125,6 +146,7 @@ namespace dev
                                 }
                             }
                             bool const hadItem = handleBulk(s.get(), h, buf.data(), n);
+                            recentlyActive = hadItem;
                             if (!s->running.load(std::memory_order_acquire)) {
                                 return;
                             }
