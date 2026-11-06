@@ -23,6 +23,7 @@ tm_basic_headers = [
     , 'TriviallySerializable.hpp'
     , 'GenericIOStreamImporterExporter.hpp'
     , 'NotConstructibleStruct.hpp'
+    , 'MoodycamelThreadedExecutor.hpp'
     , 'StructFieldInfoHelper.hpp'
     , 'StructFieldInfoHelper_Tuple.hpp'
     , 'StructFieldInfoHelper_NamedField.hpp'
