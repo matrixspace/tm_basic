@@ -109,6 +109,12 @@ namespace {
             }
             return static_cast<int64_t>(std::get<1>(x));
         }, tl(v.threadedAction));
+        if (M::actionIsThreaded(pure) != v.threadedSrc || M::actionIsThreaded(maybe) != v.threadedAction || M::actionIsThreaded(multi) != v.threadedAction ||
+            M::actionIsThreaded(join) != v.threadedAction) {
+            std::fprintf(stderr, "graph execution configuration mismatch\n");
+            return false;
+        }
+        std::printf("config src=%d actions=%d facility=%d\n", v.threadedSrc, v.threadedAction, v.threadedFacility);
         auto facility = M::template liftPureOnOrderFacility<int64_t>(
             [](int64_t &&x) {return x;}, tl(v.threadedFacility));
         auto trigger = M::template triggerImporter<typename M::template Key<int64_t>>();
@@ -204,7 +210,7 @@ int main(int argc, char **argv) {
     bool ok = true, matched = false;
     for (auto const &v :
          {Variant{"plain", false, false, false},
-          Variant{"src threaded", true, false, false},
+          Variant{"src threaded", false, false, true},
           Variant{"action+facility threaded", true, true, false},
           Variant{"src+action+facility", true, true, true}}) {
         if (selected == "all" || selected == v.name) {

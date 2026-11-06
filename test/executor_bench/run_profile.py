@@ -56,19 +56,29 @@ def main():
     parser.add_argument('--consumer-cpus', default='')
     parser.add_argument('--quick', action='store_true')
     parser.add_argument('--perf', action='store_true')
+    parser.add_argument('--split', action='store_true', help='require independently compiled per-executor binaries')
     opt = parser.parse_args()
     if opt.repeats < 1:
         parser.error('--repeats must be positive')
     opt.output.mkdir(parents=True, exist_ok=True)
     binaries = {'baseline': opt.baseline.resolve(), 'candidate': opt.candidate.resolve()}
-    hashes = {v: hashlib.sha256(p.read_bytes()).hexdigest() for v, p in binaries.items()}
     placement = []
     if opt.producer_cpus:
         placement += ['--producer-cpus', opt.producer_cpus]
     if opt.consumer_cpus:
         placement += ['--consumer-cpus', opt.consumer_cpus]
     def execute(binary, args, perf=None):
-        return run(binary, args+placement, opt.cpus, perf)
+        if opt.split:
+            engine=args[args.index('--executor')+1].replace('-', '_')
+            counts=binary.name.endswith('_counts')
+            stem=binary.name[:-7] if counts else binary.name
+            binary=binary.with_name(stem+'_'+engine+('_counts' if counts else ''))
+            if not binary.is_file():
+                raise RuntimeError(f'missing split binary: {binary}')
+        result=run(binary, args+placement, opt.cpus, perf)
+        result['binary_sha256']=hashlib.sha256(binary.read_bytes()).hexdigest()
+        result['split_build']=opt.split
+        return result
     rows = []
     with (opt.output/'results.jsonl').open('w') as output:
         def save(record):
@@ -80,7 +90,7 @@ def main():
                     record = execute(binaries[label], args)
                     if record['instrumented']:
                         raise RuntimeError('timing comparisons require the normal binary')
-                    record.update(case=name, version=label, repeat=rep, binary_sha256=hashes[label], requested_affinity=opt.cpus)
+                    record.update(case=name, version=label, repeat=rep, requested_affinity=opt.cpus)
                     rows.append(record)
                     save(record)
             print(name, 'OK', flush=True)
@@ -93,6 +103,11 @@ def main():
                             raise RuntimeError('counting requires the counts binary')
                         record.update(case=f'{executor}-counts-b{payload}', version=label, repeat=0)
                         save(record)
+                for active in (False, True):
+                    record = execute(binary.resolve(), ['--executor', 'pool', '--scenario', 'idle', '--nodes', '128', '--idle-ms', '300']
+                                     + (['--idle-work'] if active else []))
+                    record.update(case=f'pool-idle-counts-{int(active)}', version=label, repeat=0)
+                    save(record)
         if opt.perf:
             for executor in ('inline', 'dedicated', 'pool', 'moody'):
                 for label in binaries:

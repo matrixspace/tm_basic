@@ -70,7 +70,7 @@ python3 test/executor_bench/run_profile.py \
   --baseline-counts /tmp/executor-before/executor_bench_counts \
   --candidate builddir_release/test/executor_bench/executor_bench \
   --candidate-counts builddir_release/test/executor_bench/executor_bench_counts \
-  --cpus 20-27 --producer-cpus 20,21,22,23 --consumer-cpus 24,25,26,27 --repeats 5 --perf --output /tmp/executor-comparison
+  --split --cpus 20-27 --producer-cpus 20,21,22,23 --consumer-cpus 24,25,26,27 --repeats 5 --perf --output /tmp/executor-comparison
 ```
 
 The full runner uses longer runs for cheap synchronous cases to reduce
@@ -92,3 +92,27 @@ CPU placement, throughput, sparse wakeups, many quiet nodes and active idle work
 must be compared independently. Larger maxBatch can trade other strands' tail
 latency for throughput; no default scheduling-policy change is implied by a
 single benchmark.
+
+
+## Independent compilation
+
+Use `--split` for final comparisons. In addition to the two general smoke-test
+binaries, build `executor_bench_<engine>` and `executor_bench_<engine>_counts`,
+where engine is direct, inline, inline_erased, dedicated, pool or moody. These
+specialized targets set EXECUTOR_BENCH_ENGINE and are not built by default;
+request their `test/executor_bench/...` targets explicitly with `ninja -j2`.
+They instantiate only the selected backend, reducing unrelated template changes'
+influence on callback inlining and function layout. The runner requires both
+versions' split files and records the actual selected binary's SHA256.
+
+The measured producer loop caches scenario decisions and avoids runtime string
+comparisons; the common single-node case also avoids a per-message modulo.
+The direct control still includes payload creation, dispatch and correctness
+bookkeeping. It is an observer-cost reference, not a guarantee that subtracting
+two asynchronous measurements isolates pure executor cost.
+
+The companion simple_graph_bench now accepts an optional variant name, waits
+for exact expected counts and measures CPU to completion, rather than through
+a quiet window. Its former "src threaded" initializer selected the action
+flag by mistake; this is corrected and runtime action-mode checks were added.
+Do not compare that historical row by label without accounting for this fix.

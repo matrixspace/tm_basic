@@ -448,9 +448,9 @@ namespace
     // An optional statically typed submission hook is usable by the built-in
     // Inline executor; other/custom executors retain the original contract.
     template <class E, class I, class H>
-    auto submit(E &e, I &&x, H *h, int) -> decltype(e.push(std::move(x), h))
+    auto submit(E &e, I &&x, H *h, int) -> decltype(e.pushWithHost(std::move(x), h))
     {
-        return e.push(std::move(x), h);
+        return e.pushWithHost(std::move(x), h);
     }
     template <class E, class I, class H>
     bool submit(E &e, I &&x, H *, long)
@@ -474,7 +474,7 @@ namespace
             ctx->wait([&] { return ctx->started.load(std::memory_order_acquire) == o.nodes; });
         }
         auto send = [&](unsigned p, uint64_t seq, bool warm) {
-            auto i = seq % o.nodes;
+            auto i = o.nodes == 1 ? 0 : seq % o.nodes;
             Item<Payload> x(p, seq, 0, warm);
             if (!warm && o.sampleEvery && seq % o.sampleEvery == 0) {
                 x.sent = ns();
@@ -527,13 +527,18 @@ namespace
                     while (!go.load(std::memory_order_acquire)) {
                         std::this_thread::yield();
                     }
+                    // Cache scenario decisions outside the measured loop;
+                    // string comparisons are not Executor overhead.
+                    bool const closedLoop = ctx->latency;
+                    auto const intervalUs = o.intervalUs;
+                    auto const messages = o.messages;
                     auto startCpu = ns(CLOCK_THREAD_CPUTIME_ID);
                     auto deadline = ns() + 60000000000ULL;
-                    for (uint64_t i = 0; i < o.messages; ++i) {
+                    for (uint64_t i = 0; i < messages; ++i) {
                         if (!send(p, i, false)) {
                             std::abort();
                         }
-                        if (o.scenario == "latency") {
+                        if (closedLoop) {
                             auto &ack = hosts[i % o.nodes]->slots[p].ack;
                             while (ack.load(std::memory_order_acquire) < i + 1) {
                                 if (ns() > deadline) {
@@ -542,8 +547,8 @@ namespace
                                 std::this_thread::yield();
                             }
                         }
-                        if (o.intervalUs) {
-                            std::this_thread::sleep_for(std::chrono::microseconds(o.intervalUs));
+                        if (intervalUs) {
+                            std::this_thread::sleep_for(std::chrono::microseconds(intervalUs));
                         }
                     }
                     cpu[p] = ns(CLOCK_THREAD_CPUTIME_ID) - startCpu;
@@ -658,27 +663,39 @@ int main(int argc, char **argv)
 {
     try {
         auto o = parse(argc, argv);
+#if !defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 5
         infra::SharedThreadPoolConfig cfg;
         cfg.cpus = o.consumerCpus;
         cfg.threadCount = o.poolThreads;
         cfg.maxBatch = o.maxBatch;
         infra::SharedThreadPool::configure(cfg);
+#endif
+#if !defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 1
         if (o.executor == "direct") {
             return dispatch<infra::InlineExecutor, true>(o);
         }
+#endif
+#if !defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 2
         if (o.executor == "inline") {
             return dispatch<infra::InlineExecutor>(o);
         }
+#endif
+#if !defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 3
         if (o.executor == "inline-erased") {
             return dispatch<infra::InlineExecutor, false, true>(o);
         }
+#endif
+#if !defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 4
         if (o.executor == "dedicated") {
             return dispatch<infra::DedicatedThreadExecutor>(o);
         }
+#endif
+#if !defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 5
         if (o.executor == "pool") {
             return dispatch<infra::RealTimeSharedPoolExecutor>(o);
         }
-#ifdef TM_KIT_BASIC_HAS_MOODYCAMEL_THREADED_EXECUTOR
+#endif
+#if defined(TM_KIT_BASIC_HAS_MOODYCAMEL_THREADED_EXECUTOR) && (!defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 6)
         if (o.executor == "moody") {
             return dispatch<basic::MoodycamelThreadedExecutor>(o);
         }
