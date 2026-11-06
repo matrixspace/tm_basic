@@ -18,6 +18,7 @@
 #include <vector>
 #include <sys/resource.h>
 #include <time.h>
+#include <sched.h>
 
 #ifdef EXECUTOR_BENCH_COUNTS
 extern "C" void *__real_malloc(std::size_t);
@@ -156,11 +157,54 @@ namespace
             return u;
         }
     };
+    std::vector<int> parseCpus(std::string const &text)
+    {
+        std::vector<int> result;
+        cpu_set_t allowed;
+        if (sched_getaffinity(0, sizeof(allowed), &allowed)) {
+            throw std::runtime_error("sched_getaffinity failed");
+        }
+        std::size_t offset = 0;
+        while (offset < text.size()) {
+            auto end = text.find(',', offset);
+            auto part = text.substr(offset, end == std::string::npos ? end : end - offset);
+            if (part.empty() || part.find_first_not_of("0123456789") != std::string::npos) {
+                throw std::runtime_error("invalid CPU list");
+            }
+            auto cpu = std::stoul(part);
+            if (cpu >= CPU_SETSIZE || !CPU_ISSET(cpu, &allowed)) {
+                throw std::runtime_error("CPU outside allowed affinity");
+            }
+            result.push_back(cpu);
+            if (end == std::string::npos) {
+                break;
+            }
+            offset = end + 1;
+            if (offset == text.size()) {
+                throw std::runtime_error("invalid CPU list");
+            }
+        }
+        if (result.empty()) {
+            throw std::runtime_error("empty CPU list");
+        }
+        return result;
+    }
+    void pin(int cpu)
+    {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(cpu, &set);
+        if (sched_setaffinity(0, sizeof(set), &set)) {
+            throw std::runtime_error("sched_setaffinity failed");
+        }
+    }
     struct Options {
         std::string executor = "dedicated", scenario = "throughput";
         uint64_t messages = 200000, warmup = 2000, sampleEvery = 0, intervalUs = 0;
         unsigned producers = 1, nodes = 1, payload = 0, poolThreads = 2, maxBatch = 64, idleMs = 300;
         bool idleWork = false;
+        std::string producerCpuList, consumerCpuList;
+        std::vector<int> producerCpus, consumerCpus;
     };
     Options parse(int argc, char **argv)
     {
@@ -176,13 +220,23 @@ namespace
                     "--executor direct|inline|inline-erased|dedicated|pool|moody --scenario throughput|latency|idle\n"
                     "--messages N (per producer) --warmup N --producers N --nodes N --payload 0|256\n"
                     "--sample-every N (0 disables stamps) --interval-us N --pool-threads N --max-batch N\n"
-                    "--idle-ms N --idle-work; run one case per process; external taskset controls affinity");
+                    "--idle-ms N --idle-work --producer-cpus 20,21 --consumer-cpus 24,25; one case per process");
                 std::exit(0);
             }
             if (++i >= argc) {
                 throw std::runtime_error("missing value: " + k);
             }
             std::string v = argv[i];
+            if (k == "--producer-cpus") {
+                o.producerCpuList = v;
+                o.producerCpus = parseCpus(v);
+                continue;
+            }
+            if (k == "--consumer-cpus") {
+                o.consumerCpuList = v;
+                o.consumerCpus = parseCpus(v);
+                continue;
+            }
             if (k == "--executor") {
                 o.executor = v;
                 continue;
@@ -347,6 +401,9 @@ namespace
         }
         void executorWaitForStart()
         {
+            if (ctx->opt.executor != "pool" && !ctx->opt.consumerCpus.empty()) {
+                pin(ctx->opt.consumerCpus[index % ctx->opt.consumerCpus.size()]);
+            }
             ctx->started.fetch_add(1, std::memory_order_release);
             ctx->notify();
         }
@@ -458,6 +515,9 @@ namespace
             std::vector<std::thread> producers;
             for (unsigned p = 0; p < o.producers; ++p) {
                 producers.emplace_back([&, p] {
+                    if (!o.producerCpus.empty()) {
+                        pin(o.producerCpus[p % o.producerCpus.size()]);
+                    }
                     for (uint64_t i = 0; i < o.warmup; ++i) {
                         if (!send(p, i, true)) {
                             std::abort();
@@ -541,7 +601,7 @@ namespace
 #endif
         std::printf(
             "{\"executor\":\"%s\",\"scenario\":\"%s\",\"instrumented\":%s,\"ok\":%s,"
-            "\"producers\":%u,\"nodes\":%u,\"item_bytes\":%zu,\"payload\":%u,\"sample_every\":%llu,\"interval_us\":%llu,"
+            "\"producer_cpus\":\"%s\",\"consumer_cpus\":\"%s\",\"producers\":%u,\"nodes\":%u,\"item_bytes\":%zu,\"payload\":%u,\"sample_every\":%llu,\"interval_us\":%llu,"
             "\"messages_per_producer\":%llu,\"warmup\":%llu,\"pool_threads\":%u,\"max_batch\":%u,\"idle_work\":%s,\"items\":%llu,\"wall_ns\":%llu,"
             "\"process_cpu_ns\":%llu,\"producer_cpu_ns\":%llu,\"background_cpu_ns\":%llu,"
             "\"voluntary_cs\":%ld,\"involuntary_cs\":%ld,\"samples\":%zu,\"p50_ns\":%llu,\"p99_ns\":%llu,\"p999_ns\":%llu,"
@@ -550,6 +610,8 @@ namespace
             o.scenario.c_str(),
             instrumented ? "true" : "false",
             ok ? "true" : "false",
+            o.producerCpuList.c_str(),
+            o.consumerCpuList.c_str(),
             o.producers,
             o.nodes,
             sizeof(Item<Payload>),
@@ -597,6 +659,7 @@ int main(int argc, char **argv)
     try {
         auto o = parse(argc, argv);
         infra::SharedThreadPoolConfig cfg;
+        cfg.cpus = o.consumerCpus;
         cfg.threadCount = o.poolThreads;
         cfg.maxBatch = o.maxBatch;
         infra::SharedThreadPool::configure(cfg);

@@ -15,7 +15,7 @@ def cases(quick):
     for executor in ('direct', 'inline', 'inline-erased', 'dedicated', 'pool', 'moody'):
         for producers in (1, 4):
             for payload in (0, 256):
-                yield f'{executor}-p{producers}-b{payload}', ['--executor', executor, '--messages', '20000' if quick else '300000',
+                yield f'{executor}-p{producers}-b{payload}', ['--executor', executor, '--messages', '20000' if quick else ('6000000' if executor in ('direct', 'inline', 'inline-erased') else '1000000'),
                                                            '--producers', str(producers), '--payload', str(payload)]
     for executor in ('pool', 'dedicated', 'moody'):
         yield executor+'-strands', ['--executor', executor, '--messages', '20000' if quick else '100000',
@@ -52,6 +52,8 @@ def main():
         parser.add_argument('--'+arg, type=Path)
     parser.add_argument('--repeats', type=int, default=5)
     parser.add_argument('--cpus', default='')
+    parser.add_argument('--producer-cpus', default='')
+    parser.add_argument('--consumer-cpus', default='')
     parser.add_argument('--quick', action='store_true')
     parser.add_argument('--perf', action='store_true')
     opt = parser.parse_args()
@@ -60,6 +62,13 @@ def main():
     opt.output.mkdir(parents=True, exist_ok=True)
     binaries = {'baseline': opt.baseline.resolve(), 'candidate': opt.candidate.resolve()}
     hashes = {v: hashlib.sha256(p.read_bytes()).hexdigest() for v, p in binaries.items()}
+    placement = []
+    if opt.producer_cpus:
+        placement += ['--producer-cpus', opt.producer_cpus]
+    if opt.consumer_cpus:
+        placement += ['--consumer-cpus', opt.consumer_cpus]
+    def execute(binary, args, perf=None):
+        return run(binary, args+placement, opt.cpus, perf)
     rows = []
     with (opt.output/'results.jsonl').open('w') as output:
         def save(record):
@@ -68,7 +77,7 @@ def main():
         for name, args in cases(opt.quick):
             for rep in range(opt.repeats):
                 for label in (('baseline', 'candidate') if rep % 2 == 0 else ('candidate', 'baseline')):
-                    record = run(binaries[label], args, opt.cpus)
+                    record = execute(binaries[label], args)
                     if record['instrumented']:
                         raise RuntimeError('timing comparisons require the normal binary')
                     record.update(case=name, version=label, repeat=rep, binary_sha256=hashes[label], requested_affinity=opt.cpus)
@@ -79,7 +88,7 @@ def main():
             if binary:
                 for executor in ('direct', 'inline', 'dedicated', 'pool', 'moody'):
                     for payload in (0, 256):
-                        record = run(binary.resolve(), ['--executor', executor, '--messages', '20000', '--producers', '4', '--payload', str(payload)], opt.cpus)
+                        record = execute(binary.resolve(), ['--executor', executor, '--messages', '20000', '--producers', '4', '--payload', str(payload)])
                         if not record['instrumented']:
                             raise RuntimeError('counting requires the counts binary')
                         record.update(case=f'{executor}-counts-b{payload}', version=label, repeat=0)
@@ -87,7 +96,7 @@ def main():
         if opt.perf:
             for executor in ('inline', 'dedicated', 'pool', 'moody'):
                 for label in binaries:
-                    record = run(binaries[label], ['--executor', executor, '--messages', '2000000'], opt.cpus,
+                    record = execute(binaries[label], ['--executor', executor, '--messages', '2000000'],
                                  opt.output/f'perf-{label}-{executor}.csv')
                     record.update(case=executor+'-perf', version=label, repeat=0, perf_scope='whole_process_including_setup_warmup_output')
                     save(record)

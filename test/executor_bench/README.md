@@ -26,7 +26,11 @@ environment. Use `ninja -j2`; do not build the entire examples tree for profilin
   the callback does no full business checksum of the byte buffer.
 - `--producers`, `--nodes`, `--pool-threads`, `--max-batch` control contention and
   strand fairness. External taskset sets the allowed CPU set for every thread;
-  CPU migration inside the set remains possible and is visible to perf.
+  For controlled comparisons, use --producer-cpus 20,21,22,23 and
+  --consumer-cpus 24,25,26,27 to pin each producer and dedicated consumer;
+  pool workers use the consumer list through pool configuration. Lists are
+  checked against the allowed affinity. CPU migration remains possible when
+  explicit per-role placement is omitted and is visible to perf.
 - Idle uses `--nodes N --idle-ms N [--idle-work]` after startup settles. It
   reports process CPU, context switches, idle callbacks and allocations.
 - Throughput wall endpoint is the final expected callback. CPU endpoint follows
@@ -66,10 +70,11 @@ python3 test/executor_bench/run_profile.py \
   --baseline-counts /tmp/executor-before/executor_bench_counts \
   --candidate builddir_release/test/executor_bench/executor_bench \
   --candidate-counts builddir_release/test/executor_bench/executor_bench_counts \
-  --cpus 20-27 --repeats 5 --perf --output /tmp/executor-comparison
+  --cpus 20-27 --producer-cpus 20,21,22,23 --consumer-cpus 24,25,26,27 --repeats 5 --perf --output /tmp/executor-comparison
 ```
 
-The runner alternates pair order, starts a fresh process per case, records
+The full runner uses longer runs for cheap synchronous cases to reduce
+frequency/startup noise. The runner alternates pair order, starts a fresh process per case, records
 binary SHA256 and affinity, rejects failed/incorrect results, and retains
 JSONL plus median Markdown. `--quick` supports tooling smoke checks. Counts
 cases are separate from timing rows. Idle summary rows use CPU ns/second.
