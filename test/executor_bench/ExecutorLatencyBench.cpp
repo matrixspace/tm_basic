@@ -1,4 +1,5 @@
 #include <tm_kit/infra/RealTimeThreadedExecutor.hpp>
+#include <tm_kit/infra/LegacyDedicatedThreadExecutor.hpp>
 #include <tm_kit/infra/RealTimeSharedPoolExecutor.hpp>
 #include <tm_kit/basic/MoodycamelThreadedExecutor.hpp>
 #include <algorithm>
@@ -279,13 +280,15 @@ namespace
         }
         auto percentile = [](std::vector<uint64_t> const &v, double q) { return v[std::size_t((v.size() - 1) * q)]; };
         std::printf(
-            "{\"executor\":\"%s\",\"mode\":\"%s\",\"hops\":%u,\"messages\":%u,\"spin_us\":%u,\"interval_us\":%u,\"pool_threads\":%u,\"producer_cpu\":%d,\"consumer_cpu\":%d,\"consumer_cpus\":\"%s\","
+            "{\"executor\":\"%s\",\"mode\":\"%s\",\"hops\":%u,\"messages\":%u,\"warmup\":%u,\"spin_us\":%u,\"interval_us\":%u,\"pool_threads\":%u,\"producer_cpu\":%d,\"consumer_cpu\":%d,\"consumer_"
+            "cpus\":\"%s\","
             "\"wall_ns\":%llu,\"process_"
             "cpu_ns\":%llu,\"producer_cpu_ns\":%llu,\"p50_ns\":%llu,\"p99_ns\":%llu,\"p999_ns\":%llu,\"arrival_p99_ns\":%llu,\"late_p99_ns\":%llu,\"errors\":%llu,\"ok\":%s}\n",
             o.engine.c_str(),
             o.mode.c_str(),
             o.hops,
             o.messages,
+            o.warmup,
             o.spinUs,
             o.intervalUs,
             o.poolThreads,
@@ -335,6 +338,9 @@ int main(int argc, char **argv)
         }
         if (o.engine == "moody") {
             return run<basic::MoodycamelThreadedExecutor>(o);
+        }
+        if (o.engine == "legacy") {
+            return run<infra::LegacyDedicatedThreadExecutor>(o);
         }
         throw std::runtime_error("unknown executor");
     } catch (std::exception const &e) {

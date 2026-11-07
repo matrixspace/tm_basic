@@ -10,7 +10,7 @@ environment. Use `ninja -j2`; do not build the entire examples tree for profilin
 
 ## Cases and metrics
 
-- `--executor direct|inline|inline-erased|dedicated|pool|moody`.
+- `--executor direct|inline|inline-erased|dedicated|pool|moody|legacy`.
   direct calls the same Host directly; inline uses an optional statically typed
   submission hook when available; inline-erased always uses `push(Item&&)`.
 - `--scenario throughput|latency|idle`. One case per process; warm-up and
@@ -98,7 +98,7 @@ single benchmark.
 
 Use `--split` for final comparisons. In addition to the two general smoke-test
 binaries, build `executor_bench_<engine>` and `executor_bench_<engine>_counts`,
-where engine is direct, inline, inline_erased, dedicated, pool or moody. These
+where engine is direct, inline, inline_erased, dedicated, pool, moody or legacy. These
 specialized targets set EXECUTOR_BENCH_ENGINE and are not built by default;
 request their `test/executor_bench/...` targets explicitly with `ninja -j2`.
 They instantiate only the selected backend, reducing unrelated template changes'
@@ -170,3 +170,42 @@ to the corresponding generic executor_bench binaries. It then appends a separate
 128-node idle comparison (300 ms, with/without idle callbacks), retaining
 idle.jsonl and idle-summary.md. These cases check that active waiting stops;
 they do not contribute to latency percentiles.
+
+## Historical develop baseline
+
+`legacy` selects `infra::LegacyDedicatedThreadExecutor<Item>` from the explicit
+header `LegacyDedicatedThreadExecutor.hpp`. The class is deprecated and exists
+only for profiling. It ports develop `f569d42` ThreadedHandlerBase's mutex,
+two std::lists, splice, unconditional 1ms wait and per-push notification. In
+particular, notifications during processing may be lost. It intentionally ignores
+spinWait and hasIdleWork, retaining periodic empty idle callbacks. Detached state
+ownership and per-item stop checking are adaptations to the current contract;
+this compares the historical queue/wait algorithm inside the current Host, not
+the entire historical RealTimeApp binary or old TimeChecker.
+
+The generic and counts benchmarks accept `--executor legacy`; the independently
+compiled targets are `executor_bench_legacy` and `executor_bench_legacy_counts`
+(engine ID 7, all existing engine IDs stay unchanged). The latency pipeline also
+accepts legacy and records warmup. Deprecation warnings in these explicit baseline
+usages are expected; no global warning suppression is enabled.
+
+Both Python runners accept `--candidate-only --include-legacy` to compare all
+implementations from one current build, without needing archived executables.
+Without these flags, paired old/new comparisons retain their previous defaults.
+
+```sh
+python3 test/executor_bench/run_profile.py --candidate-only --include-legacy \
+  --candidate builddir_release/test/executor_bench/executor_bench \
+  --candidate-counts builddir_release/test/executor_bench/executor_bench_counts \
+  --split --repeats 5 --perf --output /tmp/executor-with-legacy
+python3 test/executor_bench/run_latency.py --candidate-only --include-legacy \
+  --candidate builddir_release/test/executor_bench/executor_latency_bench \
+  --messages 2000 --sparse-messages 2000 --warmup 32 --hops 1,4,8 \
+  --spins 0,200 --repeats 3 --output /tmp/latency-with-legacy
+```
+
+Choose affinity with the placement options described above. For multi-hop legacy
+cases, explicitly use a shorter warmup/sample count for **all** engines: inherited
+1ms waits can make the previous 20000-message/2000-warmup default take too long.
+Legacy runs only spin-us=0 in the runner because it ignores that setting. Preserve
+sample counts and avoid claiming stable p999 from only 2000 samples.

@@ -8,7 +8,10 @@ import statistics
 import hashlib
 import random
 parser = argparse.ArgumentParser(description='Process-isolated end-to-end executor latency comparison')
-parser.add_argument('--baseline', type=pathlib.Path, required=True)
+parser.add_argument('--baseline', type=pathlib.Path)
+parser.add_argument('--candidate-only', action='store_true')
+parser.add_argument('--include-legacy', action='store_true')
+parser.add_argument('--warmup', type=int, default=2000)
 parser.add_argument('--candidate', type=pathlib.Path, required=True)
 parser.add_argument('--output', type=pathlib.Path, required=True)
 parser.add_argument('--repeats', type=int, default=5)
@@ -27,33 +30,36 @@ parser.add_argument('--idle-candidate', type=pathlib.Path)
 opt = parser.parse_args()
 if bool(opt.idle_baseline) != bool(opt.idle_candidate):
     parser.error('idle baseline and candidate must be supplied together')
-if opt.repeats < 1 or opt.messages < 1 or opt.sparse_messages < 1:
+if opt.repeats < 1 or opt.messages < 1 or opt.sparse_messages < 1 or opt.warmup < 1:
     parser.error('counts must be positive')
 hops_values = [int(v) for v in opt.hops.split(',')]
 interval_values = [int(v) for v in opt.intervals.split(',')]
 spin_values = sorted(set([0] + [int(v) for v in opt.spins.split(',')]))
+if not opt.candidate_only and not opt.baseline:
+    parser.error('--baseline is required unless --candidate-only')
+engines = ['inline', 'dedicated', 'pool', 'moody'] + (['legacy'] if opt.include_legacy else [])
 out = opt.output
 out.mkdir(parents=True, exist_ok=True)
-bins = {'baseline': opt.baseline.resolve(), 'candidate': opt.candidate.resolve()}
+bins = {'candidate': opt.candidate.resolve()} if opt.candidate_only else {'baseline': opt.baseline.resolve(), 'candidate': opt.candidate.resolve()}
 sha = {v: hashlib.sha256(p.read_bytes()).hexdigest() for v, p in bins.items()}
 rows = []
 with (out / 'results.jsonl').open('w') as f:
     for repeat in range(opt.repeats):
         for hops in hops_values:
             for interval in interval_values:
-                for engine in ['inline', 'dedicated', 'pool', 'moody']:
-                    choices = [('baseline', 0), ('candidate', 0)] + ([] if engine == 'inline' else [('candidate', s) for s in spin_values if s])
+                for engine in engines:
+                    choices = ([] if opt.candidate_only else [('baseline', 0)]) + [('candidate', 0)] + ([] if engine in ('inline', 'legacy') else [('candidate', s) for s in spin_values if s])
                     random.Random(repeat).shuffle(choices)
                     for version, spin in choices:
                         n = opt.messages if interval == 0 else opt.sparse_messages
-                        args = ['--executor', engine, '--hops', str(hops), '--messages', str(n), '--interval-us', str(interval), '--spin-us', str(spin), '--producer-cpu', str(opt.producer_cpu), '--consumer-cpu', str(opt.consumer_cpu), '--mode', opt.mode] + (['--consumer-cpus', opt.consumer_cpus] if opt.consumer_cpus else [])
+                        args = ['--executor', engine, '--hops', str(hops), '--messages', str(n), '--interval-us', str(interval), '--spin-us', str(spin), '--producer-cpu', str(opt.producer_cpu), '--consumer-cpu', str(opt.consumer_cpu), '--mode', opt.mode, '--warmup', str(opt.warmup)] + (['--consumer-cpus', opt.consumer_cpus] if opt.consumer_cpus else [])
                         p = subprocess.run((['taskset', '-c', opt.cpus] if opt.cpus else []) + [str(bins[version]), *args], text=True, capture_output=True, timeout=90)
                         if p.returncode:
                             raise RuntimeError(str(args) + p.stderr)
                         r = json.loads(p.stdout)
                         if not r['ok']:
                             raise RuntimeError(str(r))
-                        r.update(version=version, repeat=repeat, binary_sha256=sha[version])
+                        r.update(version=version, repeat=repeat, binary_sha256=sha[version], warmup=opt.warmup)
                         rows.append(r)
                         f.write(json.dumps(r, sort_keys=True) + '\n')
                         f.flush()
@@ -62,8 +68,8 @@ with (out / 'summary.md').open('w') as f:
     f.write('| Executor | Hops | interval μs | Version / spin μs | p50 ns | p99 ns | CPU ns/item |\n|---|---:|---:|---|---:|---:|---:|\n')
     for hops in hops_values:
         for interval in interval_values:
-            for engine in ['inline', 'dedicated', 'pool', 'moody']:
-                for version, spin in [('baseline', 0)] + [('candidate', s) for s in spin_values]:
+            for engine in engines:
+                for version, spin in ([] if opt.candidate_only else [('baseline', 0)]) + [('candidate', s) for s in spin_values]:
                     group = [r for r in rows if (r['executor'], r['hops'], r['interval_us'], r['version'], r['spin_us']) == (engine, hops, interval, version, spin)]
                     if not group:
                         continue
@@ -76,7 +82,7 @@ if opt.idle_baseline:
     idle_bins = {'baseline': opt.idle_baseline.resolve(), 'candidate': opt.idle_candidate.resolve()}
     with (out / 'idle.jsonl').open('w') as f:
         for repeat in range(opt.repeats):
-            for engine in ['dedicated', 'pool', 'moody']:
+            for engine in ['dedicated', 'pool', 'moody'] + (['legacy'] if opt.include_legacy else []):
                 for active in [False, True]:
                     versions = list(idle_bins)
                     random.Random(repeat).shuffle(versions)
@@ -98,7 +104,7 @@ if opt.idle_baseline:
                         f.flush()
     with (out / 'idle-summary.md').open('w') as f:
         f.write('| Executor | Active idle | Version | CPU ms/second |\n|---|---|---|---:|\n')
-        for engine in ['dedicated', 'pool', 'moody']:
+        for engine in ['dedicated', 'pool', 'moody'] + (['legacy'] if opt.include_legacy else []):
             for active in [False, True]:
                 for version in idle_bins:
                     group = [r for r in idle_rows if (r['executor'], r['idle_work'], r['version']) == (engine, active, version)]

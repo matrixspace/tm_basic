@@ -12,7 +12,7 @@ endforeach
 
 # Compile each backend independently for comparisons: unrelated executor
 # template changes must not affect shared callback inlining decisions.
-engine_names = ['direct', 'inline', 'inline_erased', 'dedicated', 'pool', 'moody']
+engine_names = ['direct', 'inline', 'inline_erased', 'dedicated', 'pool', 'moody', 'legacy']
 foreach index : range(engine_names.length())
     foreach instrumented : [false, true]
         suffix = instrumented ? '_counts' : ''
