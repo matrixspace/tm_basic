@@ -176,11 +176,13 @@ they do not contribute to latency percentiles.
 `legacy` selects `infra::LegacyDedicatedThreadExecutor<Item>` from the explicit
 header `LegacyDedicatedThreadExecutor.hpp`. The class is deprecated and exists
 only for profiling. It ports develop `f569d42` ThreadedHandlerBase's mutex,
-two std::lists, splice, unconditional 1ms wait and per-push notification. In
-particular, notifications during processing may be lost. It intentionally ignores
+two std::lists, splice and per-push notification. The initial port also retained
+the unconditional 1ms wait; its original results are archived separately. The
+current Legacy now uses a predicate for queued data, stop and explicit wakeIdle,
+fixing the lost-notification wait without changing its list algorithm. It ignores
 spinWait and hasIdleWork, retaining periodic empty idle callbacks. Detached state
 ownership and per-item stop checking are adaptations to the current contract;
-this compares the historical queue/wait algorithm inside the current Host, not
+this compares the legacy list algorithm (with the wait fix) inside the current Host, not
 the entire historical RealTimeApp binary or old TimeChecker.
 
 The generic and counts benchmarks accept `--executor legacy`; the independently
@@ -209,3 +211,9 @@ cases, explicitly use a shorter warmup/sample count for **all** engines: inherit
 1ms waits can make the previous 20000-message/2000-warmup default take too long.
 Legacy runs only spin-us=0 in the runner because it ignores that setting. Preserve
 sample counts and avoid claiming stable p999 from only 2000 samples.
+
+For a focused before/after latency comparison, use `run_latency.py --engines legacy`
+with `--baseline` and `--candidate` binaries. The default engine list remains
+unchanged; `--include-legacy` still adds Legacy to a full comparison. Keep equal
+warmup, samples and affinity on both sides. Data from the initial unconditional
+wait version must not be labeled as the current fixed Legacy implementation.

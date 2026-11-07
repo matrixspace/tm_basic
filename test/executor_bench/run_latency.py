@@ -11,6 +11,7 @@ parser = argparse.ArgumentParser(description='Process-isolated end-to-end execut
 parser.add_argument('--baseline', type=pathlib.Path)
 parser.add_argument('--candidate-only', action='store_true')
 parser.add_argument('--include-legacy', action='store_true')
+parser.add_argument('--engines', default='inline,dedicated,pool,moody', help='comma-separated pipeline engines, including legacy when selected explicitly')
 parser.add_argument('--warmup', type=int, default=2000)
 parser.add_argument('--candidate', type=pathlib.Path, required=True)
 parser.add_argument('--output', type=pathlib.Path, required=True)
@@ -37,7 +38,11 @@ interval_values = [int(v) for v in opt.intervals.split(',')]
 spin_values = sorted(set([0] + [int(v) for v in opt.spins.split(',')]))
 if not opt.candidate_only and not opt.baseline:
     parser.error('--baseline is required unless --candidate-only')
-engines = ['inline', 'dedicated', 'pool', 'moody'] + (['legacy'] if opt.include_legacy else [])
+engines = list(dict.fromkeys(opt.engines.split(',')))
+if opt.include_legacy and 'legacy' not in engines:
+    engines.append('legacy')
+if not engines or any(e not in ('inline', 'dedicated', 'pool', 'moody', 'legacy') for e in engines):
+    parser.error('invalid --engines list')
 out = opt.output
 out.mkdir(parents=True, exist_ok=True)
 bins = {'candidate': opt.candidate.resolve()} if opt.candidate_only else {'baseline': opt.baseline.resolve(), 'candidate': opt.candidate.resolve()}
@@ -82,7 +87,7 @@ if opt.idle_baseline:
     idle_bins = {'baseline': opt.idle_baseline.resolve(), 'candidate': opt.idle_candidate.resolve()}
     with (out / 'idle.jsonl').open('w') as f:
         for repeat in range(opt.repeats):
-            for engine in ['dedicated', 'pool', 'moody'] + (['legacy'] if opt.include_legacy else []):
+            for engine in [e for e in engines if e != 'inline']:
                 for active in [False, True]:
                     versions = list(idle_bins)
                     random.Random(repeat).shuffle(versions)
@@ -104,7 +109,7 @@ if opt.idle_baseline:
                         f.flush()
     with (out / 'idle-summary.md').open('w') as f:
         f.write('| Executor | Active idle | Version | CPU ms/second |\n|---|---|---|---:|\n')
-        for engine in ['dedicated', 'pool', 'moody'] + (['legacy'] if opt.include_legacy else []):
+        for engine in [e for e in engines if e != 'inline']:
             for active in [False, True]:
                 for version in idle_bins:
                     group = [r for r in idle_rows if (r['executor'], r['idle_work'], r['version']) == (engine, active, version)]
