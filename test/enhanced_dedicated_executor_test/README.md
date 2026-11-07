@@ -32,3 +32,8 @@ Timing/allocation comparisons belong in `../executor_bench` and must not run
 concurrently with builds or sanitizer stress tests.
 
 [Task record](../../../tm_infra/doc/20261105-realtime-threaded-executor/mpsc-node-recycling.md)
+
+Node recycling uses eight shards, each with a 32-pointer Boost SPSC queue and
+an eight-pointer read batch protected by the shard admission flag. The queue
+owns both buffers; producer exit needs no cleanup callback. At most 320 empty
+nodes can be retained; overflow still goes to delete and misses to new.

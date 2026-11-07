@@ -39,6 +39,10 @@ namespace dev
                             // nodes as one logical reader, with nonblocking admission.
                             // Collisions bypass the cache rather than spin on this flag.
                             alignas(64) std::atomic_flag reading = ATOMIC_FLAG_INIT;
+                            // Protected by reading: amortize queue index synchronization.
+                            // Stored in the queue, so producer exit cannot strand nodes.
+                            std::array<Node *, 8> local{};
+                            std::size_t available = 0;
                         };
                         std::array<RecycleCache, recycleShards> recycled_;
 
@@ -54,7 +58,12 @@ namespace dev
                             Node *n = nullptr;
                             auto &cache = recycled_[shard];
                             if (!cache.reading.test_and_set(std::memory_order_acquire)) {
-                                cache.queue.pop(n);
+                                if (cache.available == 0) {
+                                    cache.available = cache.queue.pop(cache.local.data(), cache.local.size());
+                                }
+                                if (cache.available) {
+                                    n = cache.local[--cache.available];
+                                }
                                 cache.reading.clear(std::memory_order_release);
                             }
                             if (n) {
@@ -88,6 +97,9 @@ namespace dev
                         ~MPSCQueue()
                         {
                             for (auto &cache : recycled_) {
+                                while (cache.available) {
+                                    delete cache.local[--cache.available];
+                                }
                                 Node *cached;
                                 while (cache.queue.pop(cached)) {
                                     delete cached;
