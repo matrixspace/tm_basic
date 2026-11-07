@@ -11,18 +11,18 @@ import statistics
 import subprocess
 
 
-def cases(quick, include_legacy=False):
-    for executor in ('direct', 'inline', 'inline-erased', 'dedicated', 'pool', 'moody') + (('legacy',) if include_legacy else ()):
+def cases(quick):
+    for executor in ('direct', 'inline', 'inline-erased', 'dedicated', 'pool', 'moody'):
         for producers in (1, 4):
             for payload in (0, 256):
                 yield f'{executor}-p{producers}-b{payload}', ['--executor', executor, '--messages', '20000' if quick else ('6000000' if executor in ('direct', 'inline', 'inline-erased') else '1000000'),
                                                            '--producers', str(producers), '--payload', str(payload)]
-    for executor in ('pool', 'dedicated', 'moody') + (('legacy',) if include_legacy else ()):
+    for executor in ('pool', 'dedicated', 'moody'):
         yield executor+'-strands', ['--executor', executor, '--messages', '20000' if quick else '100000',
                                     '--producers', '4', '--nodes', '32', '--sample-every', '127']
-    for executor in ('inline', 'dedicated', 'pool', 'moody') + (('legacy',) if include_legacy else ()):
+    for executor in ('inline', 'dedicated', 'pool', 'moody'):
         yield executor+'-latency', ['--executor', executor, '--scenario', 'latency', '--messages', '1000' if quick else '3000', '--interval-us', '50']
-    for executor in ('pool', 'dedicated', 'moody') + (('legacy',) if include_legacy else ()):
+    for executor in ('pool', 'dedicated', 'moody'):
         for active in (False, True):
             yield f'{executor}-idle-{int(active)}', ['--executor', executor, '--scenario', 'idle', '--nodes', '32' if quick else '128',
                                                     '--idle-ms', '100' if quick else '300'] + (['--idle-work'] if active else [])
@@ -50,7 +50,6 @@ def main():
         parser.add_argument('--'+arg, required=True, type=Path)
     parser.add_argument('--baseline', type=Path)
     parser.add_argument('--candidate-only', action='store_true')
-    parser.add_argument('--include-legacy', action='store_true')
     for arg in ('baseline-counts', 'candidate-counts'):
         parser.add_argument('--'+arg, type=Path)
     parser.add_argument('--repeats', type=int, default=5)
@@ -90,7 +89,7 @@ def main():
         def save(record):
             output.write(json.dumps(record, sort_keys=True)+'\n')
             output.flush()
-        for name, args in cases(opt.quick, opt.include_legacy):
+        for name, args in cases(opt.quick):
             for rep in range(opt.repeats):
                 for label in (list(binaries) if rep % 2 == 0 else list(reversed(binaries))):
                     record = execute(binaries[label], args)
@@ -102,7 +101,7 @@ def main():
             print(name, 'OK', flush=True)
         for label, binary in (('baseline', opt.baseline_counts), ('candidate', opt.candidate_counts)):
             if binary and label in binaries:
-                for executor in ('direct', 'inline', 'dedicated', 'pool', 'moody') + (('legacy',) if opt.include_legacy else ()):
+                for executor in ('direct', 'inline', 'dedicated', 'pool', 'moody'):
                     for payload in (0, 256):
                         record = execute(binary.resolve(), ['--executor', executor, '--messages', '20000', '--producers', '4', '--payload', str(payload)])
                         if not record['instrumented']:
@@ -115,7 +114,7 @@ def main():
                     record.update(case=f'pool-idle-counts-{int(active)}', version=label, repeat=0)
                     save(record)
         if opt.perf:
-            for executor in ('inline', 'dedicated', 'pool', 'moody') + (('legacy',) if opt.include_legacy else ()):
+            for executor in ('inline', 'dedicated', 'pool', 'moody'):
                 for label in binaries:
                     record = execute(binaries[label], ['--executor', executor, '--messages', '2000000'],
                                  opt.output/f'perf-{label}-{executor}.csv')
@@ -126,7 +125,7 @@ def main():
             summary.write('| Case | wall ns/item | CPU ns/item |\n|---|---:|---:|\n')
         else:
             summary.write('| Case | wall ns/item baseline→candidate | CPU ns/item baseline→candidate | CPU change |\n|---|---:|---:|---:|\n')
-        for name, _ in cases(opt.quick, opt.include_legacy):
+        for name, _ in cases(opt.quick):
             group = {v: [r for r in rows if r['case'] == name and r['version'] == v] for v in binaries}
             def metric(v, key):
                 return statistics.median(r[key]/(r['items'] or r['wall_ns']/1e9) for r in group[v])

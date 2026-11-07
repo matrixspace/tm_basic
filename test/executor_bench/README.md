@@ -173,55 +173,14 @@ they do not contribute to latency percentiles.
 
 ## Historical develop baseline
 
-`legacy` selects `infra::LegacyDedicatedThreadExecutor<Item>` from the explicit
-header `LegacyDedicatedThreadExecutor.hpp`. The class is deprecated and exists
-only for profiling. It ports develop `f569d42` ThreadedHandlerBase's mutex,
-two std::lists, splice and per-push notification. The initial port also retained
-the unconditional 1ms wait; its original results are archived separately. The
-current Legacy now uses a predicate for queued data, stop and explicit wakeIdle,
-fixing the lost-notification wait without changing its list algorithm. It ignores
-spinWait and hasIdleWork, retaining periodic empty idle callbacks. Detached state
-ownership and per-item stop checking are adaptations to the current contract;
-this compares the legacy list algorithm (with the wait fix) inside the current Host, not
-the entire historical RealTimeApp binary or old TimeChecker.
-
-The generic and counts benchmarks accept `--executor legacy`; the independently
-compiled targets are `executor_bench_legacy` and `executor_bench_legacy_counts`
-(engine ID 7, all existing engine IDs stay unchanged). The latency pipeline also
-accepts legacy and records warmup. Deprecation warnings in these explicit baseline
-usages are expected; no global warning suppression is enabled.
-
-Both Python runners accept `--candidate-only --include-legacy` to compare all
-implementations from one current build, without needing archived executables.
-Without these flags, paired old/new comparisons retain their previous defaults.
-
-```sh
-python3 test/executor_bench/run_profile.py --candidate-only --include-legacy \
-  --candidate builddir_release/test/executor_bench/executor_bench \
-  --candidate-counts builddir_release/test/executor_bench/executor_bench_counts \
-  --split --repeats 5 --perf --output /tmp/executor-with-legacy
-python3 test/executor_bench/run_latency.py --candidate-only --include-legacy \
-  --candidate builddir_release/test/executor_bench/executor_latency_bench \
-  --messages 2000 --sparse-messages 2000 --warmup 32 --hops 1,4,8 \
-  --spins 0,200 --repeats 3 --output /tmp/latency-with-legacy
-```
-
-Choose affinity with the placement options described above. For multi-hop legacy
-cases, explicitly use a shorter warmup/sample count for **all** engines: inherited
-1ms waits can make the previous 20000-message/2000-warmup default take too long.
-Legacy runs only spin-us=0 in the runner because it ignores that setting. Preserve
-sample counts and avoid claiming stable p999 from only 2000 samples.
-
-For a focused before/after latency comparison, use `run_latency.py --engines legacy`
-with `--baseline` and `--candidate` binaries. The default engine list remains
-unchanged; `--include-legacy` still adds Legacy to a full comparison. Keep equal
-warmup, samples and affinity on both sides. Data from the initial unconditional
-wait version must not be labeled as the current fixed Legacy implementation.
+Archived measurements retain their historical `legacy` labels. The old Legacy
+class, header, benchmark engine and `--include-legacy` runner flag have been
+removed. Use `--executor dedicated` for the current mutex/list default.
+`run_latency.py --engines dedicated,enhanced` compares the current backends.
 
 ## Enhanced dedicated executor
 
-`--executor dedicated` now selects infra's default mutex/list executor; `legacy`
-is its compatibility alias. `--executor enhanced` selects
+`--executor dedicated` selects infra's default mutex/list executor. `--executor enhanced` selects
 `basic::EnhancedDedicatedThreadedExecutor` (MPSC plus bounded Boost.Lockfree
 node reuse). Split binaries are `executor_bench_enhanced` and `_counts`.
 `ExecutorLatencyBench` accepts `--executor enhanced` for multi-hop comparisons.
@@ -230,7 +189,7 @@ Historical result files retain the original meanings of their engine names.
 `run_enhanced_profile.py --baseline <unpooled-enhanced> --candidate <enhanced>
 --baseline-counts <unpooled-counts> --candidate-counts <enhanced-counts>
 --output <directory>` runs five alternating comparisons on CPUs 20–27.
-Build both versions with the same current benchmark source, flags and engine=8;
+Build both versions with the same current benchmark source, flags and engine=7;
 only substitute the Enhanced header for the baseline. The baseline is the old
 MPSC implementation renamed into basic without node reuse. Do not compare the
 new default against the old MPSC and attribute the result solely to node reuse.
@@ -238,6 +197,6 @@ new default against the old MPSC and attribute the result solely to node reuse.
 Use `python3 prepare_unpooled_enhanced.py --infra-repo <infra-worktree>
 --revision ff08700 --output /tmp/mpsc-baseline` to reproduce the historical
 baseline include override. Add `-I/tmp/mpsc-baseline` before the current source
-include roots when compiling the baseline with `-DEXECUTOR_BENCH_ENGINE=8`.
+include roots when compiling the baseline with `-DEXECUTOR_BENCH_ENGINE=7`.
 The candidate uses the current basic header. For counts add
 `-DEXECUTOR_BENCH_COUNTS=1 -Wl,--wrap=malloc -Wl,--wrap=free`.

@@ -1,5 +1,5 @@
 #include <tm_kit/infra/RealTimeThreadedExecutor.hpp>
-#include <tm_kit/infra/LegacyDedicatedThreadExecutor.hpp>
+#include <tm_kit/infra/RealTimeThreadedExecutor.hpp>
 #include <tm_kit/basic/EnhancedDedicatedThreadedExecutor.hpp>
 #include <tm_kit/infra/RealTimeSharedPoolExecutor.hpp>
 #include <tm_kit/basic/MoodycamelThreadedExecutor.hpp>
@@ -342,9 +342,6 @@ int main(int argc, char **argv)
         }
         if (o.engine == "moody") {
             return run<basic::MoodycamelThreadedExecutor>(o);
-        }
-        if (o.engine == "legacy") {
-            return run<infra::LegacyDedicatedThreadExecutor>(o);
         }
         throw std::runtime_error("unknown executor");
     } catch (std::exception const &e) {

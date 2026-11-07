@@ -10,8 +10,7 @@ import random
 parser = argparse.ArgumentParser(description='Process-isolated end-to-end executor latency comparison')
 parser.add_argument('--baseline', type=pathlib.Path)
 parser.add_argument('--candidate-only', action='store_true')
-parser.add_argument('--include-legacy', action='store_true')
-parser.add_argument('--engines', default='inline,dedicated,pool,moody', help='comma-separated pipeline engines, including legacy when selected explicitly')
+parser.add_argument('--engines', default='inline,dedicated,pool,moody', help='comma-separated pipeline engines, including enhanced when selected explicitly')
 parser.add_argument('--warmup', type=int, default=2000)
 parser.add_argument('--candidate', type=pathlib.Path, required=True)
 parser.add_argument('--output', type=pathlib.Path, required=True)
@@ -39,9 +38,7 @@ spin_values = sorted(set([0] + [int(v) for v in opt.spins.split(',')]))
 if not opt.candidate_only and not opt.baseline:
     parser.error('--baseline is required unless --candidate-only')
 engines = list(dict.fromkeys(opt.engines.split(',')))
-if opt.include_legacy and 'legacy' not in engines:
-    engines.append('legacy')
-if not engines or any(e not in ('inline', 'dedicated', 'pool', 'moody', 'legacy') for e in engines):
+if not engines or any(e not in ('inline', 'dedicated', 'pool', 'moody', 'enhanced') for e in engines):
     parser.error('invalid --engines list')
 out = opt.output
 out.mkdir(parents=True, exist_ok=True)
@@ -53,7 +50,7 @@ with (out / 'results.jsonl').open('w') as f:
         for hops in hops_values:
             for interval in interval_values:
                 for engine in engines:
-                    choices = ([] if opt.candidate_only else [('baseline', 0)]) + [('candidate', 0)] + ([] if engine in ('inline', 'legacy') else [('candidate', s) for s in spin_values if s])
+                    choices = ([] if opt.candidate_only else [('baseline', 0)]) + [('candidate', 0)] + ([] if engine in ('inline', 'dedicated') else [('candidate', s) for s in spin_values if s])
                     random.Random(repeat).shuffle(choices)
                     for version, spin in choices:
                         n = opt.messages if interval == 0 else opt.sparse_messages
