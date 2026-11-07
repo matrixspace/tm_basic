@@ -5,4 +5,5 @@ if build_machine.system() == 'linux'
     subdir('simple_graph_bench')
     subdir('chain_writer_loop_test')
     subdir('executor_bench')
+    subdir('enhanced_dedicated_executor_test')
 endif

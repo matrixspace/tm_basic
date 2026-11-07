@@ -217,3 +217,27 @@ with `--baseline` and `--candidate` binaries. The default engine list remains
 unchanged; `--include-legacy` still adds Legacy to a full comparison. Keep equal
 warmup, samples and affinity on both sides. Data from the initial unconditional
 wait version must not be labeled as the current fixed Legacy implementation.
+
+## Enhanced dedicated executor
+
+`--executor dedicated` now selects infra's default mutex/list executor; `legacy`
+is its compatibility alias. `--executor enhanced` selects
+`basic::EnhancedDedicatedThreadedExecutor` (MPSC plus bounded Boost.Lockfree
+node reuse). Split binaries are `executor_bench_enhanced` and `_counts`.
+`ExecutorLatencyBench` accepts `--executor enhanced` for multi-hop comparisons.
+Historical result files retain the original meanings of their engine names.
+
+`run_enhanced_profile.py --baseline <unpooled-enhanced> --candidate <enhanced>
+--baseline-counts <unpooled-counts> --candidate-counts <enhanced-counts>
+--output <directory>` runs five alternating comparisons on CPUs 20–27.
+Build both versions with the same current benchmark source, flags and engine=8;
+only substitute the Enhanced header for the baseline. The baseline is the old
+MPSC implementation renamed into basic without node reuse. Do not compare the
+new default against the old MPSC and attribute the result solely to node reuse.
+
+Use `python3 prepare_unpooled_enhanced.py --infra-repo <infra-worktree>
+--revision ff08700 --output /tmp/mpsc-baseline` to reproduce the historical
+baseline include override. Add `-I/tmp/mpsc-baseline` before the current source
+include roots when compiling the baseline with `-DEXECUTOR_BENCH_ENGINE=8`.
+The candidate uses the current basic header. For counts add
+`-DEXECUTOR_BENCH_COUNTS=1 -Wl,--wrap=malloc -Wl,--wrap=free`.

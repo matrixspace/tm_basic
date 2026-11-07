@@ -1,8 +1,12 @@
 #include <tm_kit/infra/Environments.hpp>
 #include <tm_kit/infra/RealTimeApp.hpp>
+#ifdef TM_KIT_BASIC_TEST_ENHANCED_EXECUTOR
+#include <tm_kit/basic/EnhancedDedicatedThreadedExecutor.hpp>
+#else
 #include <tm_kit/basic/MoodycamelThreadedExecutor.hpp>
 #ifndef TM_KIT_BASIC_HAS_MOODYCAMEL_THREADED_EXECUTOR
 #error "moodycamel concurrentqueue headers not found"
+#endif
 #endif
 
 #include <algorithm>
@@ -36,6 +40,15 @@
 using namespace dev::cd606::tm;
 
 namespace {
+#ifdef TM_KIT_BASIC_TEST_ENHANCED_EXECUTOR
+    using TestedComponent = basic::EnhancedDedicatedThreadedExecutorComponent;
+    template <class T> using TestedExecutor = basic::EnhancedDedicatedThreadedExecutor<T>;
+    constexpr char const *testedTag = " [enhanced]";
+#else
+    using TestedComponent = basic::MoodycamelThreadedExecutorComponent;
+    template <class T> using TestedExecutor = basic::MoodycamelThreadedExecutor<T>;
+    constexpr char const *testedTag = " [moodycamel]";
+#endif
 
     struct TestClockComponent {
         using TimePointType = std::chrono::system_clock::time_point;
@@ -55,13 +68,13 @@ namespace {
     };
     template <bool CheckTime>
     struct EnvFor<CheckTime, true> {
-        using type = infra::Environment<infra::CheckTimeComponent<CheckTime>, infra::TrivialExitControlComponent, TestClockComponent, basic::MoodycamelThreadedExecutorComponent>;
+        using type = infra::Environment<infra::CheckTimeComponent<CheckTime>, infra::TrivialExitControlComponent, TestClockComponent, TestedComponent>;
     };
     template <bool CheckTime, bool Pool>
     using TestEnv = typename EnvFor<CheckTime, Pool>::type;
 
     std::string tagOf(bool pool) {
-        return pool ? " [moodycamel]" : " [dedicated]";
+        return pool ? testedTag : " [dedicated]";
     }
 
     int g_failures = 0;
@@ -97,9 +110,9 @@ namespace {
         using Dflt = TestEnv<false, false>;
         using Mc = TestEnv<false, true>;
         constexpr bool d = std::is_same_v<infra::RealTimeThreadedExecutorFor<Dflt, int>, infra::DedicatedThreadExecutor<int>>;
-        constexpr bool m1 = std::is_same_v<infra::RealTimeThreadedExecutorFor<Mc, int>, basic::MoodycamelThreadedExecutor<int>>;
+        constexpr bool m1 = std::is_same_v<infra::RealTimeThreadedExecutorFor<Mc, int>, TestedExecutor<int>>;
         check(d, "default environment selects DedicatedThreadExecutor");
-        check(m1, "moodycamel environment selects MoodycamelThreadedExecutor");
+        check(m1, std::string("environment selects configured executor") + testedTag);
     }
 
     //---- shared bookkeeping for handler tests
@@ -258,7 +271,11 @@ namespace {
         std::string tag = tagOf(Pool);
         //about 100 at a 1ms rhythm; loose bounds for loaded machines
         check(withIdle >= 20 && withIdle <= 150, "idle work periodic while hasIdleWork() (" + std::to_string(withIdle) + "/100ms)" + tag);
-        check(withoutIdle <= 1, "no idle work while hasIdleWork() is false (" + std::to_string(withoutIdle) + "/100ms)" + tag);
+        if constexpr (Pool) {
+            check(withoutIdle <= 1, "no idle work while hasIdleWork() is false (" + std::to_string(withoutIdle) + "/100ms)" + tag);
+        } else {
+            check(withoutIdle >= 20 && withoutIdle <= 150, "default retains periodic idle callbacks (" + std::to_string(withoutIdle) + "/100ms)" + tag);
+        }
         check(resumed >= 20, "idle work resumes after wakeIdle() (" + std::to_string(resumed) + "/100ms)" + tag);
         h->stopNow();
         //leaked on purpose: the handler thread is detached (pre-existing lifecycle, see task record)
