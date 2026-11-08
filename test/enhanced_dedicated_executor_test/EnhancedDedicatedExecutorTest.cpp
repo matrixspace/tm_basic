@@ -208,11 +208,46 @@ namespace
         exec->push({0, 10000});
         check(wait([&] { return host->count.load(std::memory_order_acquire) == 40001; }) && !exec->push({0, 10001}), "enhanced stop is callback safe and rejects later pushes");
     }
+    void wakeRaceTest()
+    {
+        for (unsigned spinUs : {0U, 200U}) {
+            infra::ThreadedExecOptions opts;
+            opts.spinWait = std::chrono::microseconds(spinUs);
+            auto *exec = new Exec(opts);
+            auto *host = new Host{exec};
+            host->ready = true;
+            exec->start(host);
+            std::thread producer([&] {
+                for (unsigned n = 0; n < 20000; ++n) {
+                    exec->push({0, n});
+                    if ((n & 63) == 0) {
+                        std::this_thread::yield();
+                    }
+                }
+            });
+            std::thread waker([&] {
+                for (unsigned n = 0; n < 20000; ++n) {
+                    host->wantsIdle = (n & 1) != 0;
+                    exec->wakeIdle();
+                }
+            });
+            producer.join();
+            waker.join();
+            check(wait([&] { return host->count.load(std::memory_order_acquire) == 20000; }) && host->errors == 0, "concurrent idle wakes and publications drain without lost wakeups");
+            auto idleBefore = host->idle.load();
+            host->wantsIdle = true;
+            exec->wakeIdle();
+            check(wait([&] { return host->idle.load() > idleBefore; }), "final idle activation survives wake acknowledgement race");
+            exec->stop();
+            check(!exec->push({0, 20000}), "stop remains effective after wake stress");
+        }
+    }
 } // namespace
 int main()
 {
     queueTest();
     queueRecycleStressTest();
     executorTest();
+    wakeRaceTest();
     return failures ? 1 : 0;
 }

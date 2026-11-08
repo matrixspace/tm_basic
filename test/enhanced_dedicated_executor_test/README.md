@@ -37,3 +37,7 @@ Node recycling uses eight shards, each with a 32-pointer Boost SPSC queue and
 an eight-pointer read batch protected by the shard admission flag. The queue
 owns both buffers; producer exit needs no cleanup callback. At most 320 empty
 nodes can be retained; overflow still goes to delete and misses to new.
+
+The direct suite also races 20000 input messages with 20000 idle wake/state
+changes, both with spinWait=0 and 200us, then checks final idle activation and
+stop. This covers conditional wake acknowledgement and active link polling.

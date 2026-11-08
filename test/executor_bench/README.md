@@ -200,3 +200,43 @@ baseline include override. Add `-I/tmp/mpsc-baseline` before the current source
 include roots when compiling the baseline with `-DEXECUTOR_BENCH_ENGINE=7`.
 The candidate uses the current basic header. For counts add
 `-DEXECUTOR_BENCH_COUNTS=1 -Wl,--wrap=malloc -Wl,--wrap=free`.
+
+## Low-latency placement and spin budget
+
+The Enhanced executor remains asynchronous. Compare it with Inline under the
+same payload and pacing; a lower latency achieved by continuously spinning has
+a CPU cost. `ThreadedExecOptions::spinWait` is the direct executor option; the
+benchmark exposes it as `--spin-us`. No default budget or affinity is changed. With idle work enabled, the active
+wait is additionally capped by the executor idle period.
+
+For this host, sysfs reports CPU20/48 as SMT siblings. Reproduce the optional
+one-hop, 1ms-interval configuration with:
+
+```sh
+taskset -c 20,48 builddir_release/test/executor_bench/executor_latency_bench \
+  --executor enhanced --producer-cpu 20 --consumer-cpus 48 --hops 1 \
+  --spin-us 2000 --interval-us 1000 --messages 500 --warmup 16
+```
+
+Compare `--executor inline` and spin budgets 0/200/2000; inspect process_cpu_ns
+relative to wall_ns as well as latency. Determine sibling CPUs from the actual
+host topology. SMT can reduce cache-transfer latency but shares execution
+resources with real callback work. These small-message results do not establish
+business-workload throughput or extreme-tail guarantees. Historical result
+files and the task record keep placement gains separate from code gains.
+
+### 多生产者噪声复核
+
+`run_contention_profile.py` 每轮随机运行两个相同基线和一个候选，默认30轮；保存命令、二进制SHA256和原始结果，按轮配对bootstrap计算平均CPU/item变化的95%区间。两个基线标签用于检查机器噪声，不能只比较少量样本的中位数。使用未启用counts的二进制，并按本机拓扑调整CPU列表：
+
+```sh
+python3 test/executor_bench/run_contention_profile.py \
+  --baseline /tmp/baseline/executor_bench_enhanced \
+  --candidate builddir_release/test/executor_bench/executor_bench_enhanced \
+  --output /tmp/contention-profile
+python3 test/executor_bench/run_contention_profile.py \
+  --summarize-only /tmp/contention-profile/results.jsonl \
+  --output /tmp/contention-summary
+```
+
+复算使用与测量相同的 `--seed`（默认20261108）。区间仅描述当前负载和机器的测量，不代表所有部署环境。

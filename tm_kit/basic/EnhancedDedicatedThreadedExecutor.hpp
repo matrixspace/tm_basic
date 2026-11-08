@@ -156,9 +156,13 @@ namespace dev
                             std::forward<F>(consume)(std::move(*next->value));
                             return true;
                         }
-                        //consumer only. Unlike tryConsume this also reports items whose
-                        //producer has done the exchange but not yet linked the node, so
-                        //the consumer never goes to sleep inside that window
+                        // Consumer only: active polling observes completed publication.
+                        bool hasPublishedItem() const
+                        {
+                            return tail_->next.load(std::memory_order_acquire) != nullptr;
+                        }
+                        // Consumer only. Keep the seq_cst head read for the sleep
+                        // handshake, including the exchange-before-link window.
                         bool maybeNonEmpty() const
                         {
                             return head_.load(std::memory_order_seq_cst) != tail_;
@@ -247,8 +251,14 @@ namespace dev
                         if (hasIdle) {
                             budget = std::min(budget, std::chrono::duration_cast<std::chrono::nanoseconds>(Config::idlePeriod));
                         }
-                        if (recentlyActive && infra::realtime_threaded_executor_detail::spinUntil(budget, ready)) {
-                            s->wakeRequested.exchange(false, std::memory_order_acq_rel);
+                        if (recentlyActive && infra::realtime_threaded_executor_detail::spinUntil(budget, [s] {
+                                return s->queue.hasPublishedItem() || !s->running.load(std::memory_order_acquire) || s->wakeRequested.load(std::memory_order_acquire);
+                            })) {
+                            // Avoid a write to the sleeping cache line unless an
+                            // explicit idle wake needs acknowledgement.
+                            if (s->wakeRequested.load(std::memory_order_acquire)) {
+                                s->wakeRequested.exchange(false, std::memory_order_acq_rel);
+                            }
                             return;
                         }
                         for (unsigned i = 0; i < Config::spinBeforeSleep; ++i) {
@@ -269,7 +279,9 @@ namespace dev
                         //a wakeIdle racing with this reset is not lost: its host state
                         //change happened before it set the flag, and the next round
                         //re-reads executorHasIdleWork() before sleeping again
-                        s->wakeRequested.exchange(false, std::memory_order_acq_rel);
+                        if (s->wakeRequested.load(std::memory_order_acquire)) {
+                            s->wakeRequested.exchange(false, std::memory_order_acq_rel);
+                        }
                     }
                     template <class Host>
                     static void run(std::shared_ptr<State> s, Host *h)
@@ -288,7 +300,10 @@ namespace dev
                             if (!s->running.load(std::memory_order_acquire)) {
                                 return;
                             }
-                            if (!s->queue.maybeNonEmpty()) {
+                            // A published link proves there is work without reading
+                            // the producer-owned head cache line. Still check head
+                            // before idle to cover a producer's unpublished link.
+                            if (!s->queue.hasPublishedItem() && !s->queue.maybeNonEmpty()) {
                                 //timed out (or woken by wakeIdle) with nothing pending
                                 h->executorIdleWork();
                             }
