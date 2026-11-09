@@ -28,6 +28,21 @@ nlohmann_json_dep = dependency('nlohmann-json')
 simd_json_dep = dependency('simdjson')
 common_deps = [thread_dep, boost_dep, spd_dep, tm_infra_dep, nlohmann_json_dep, simd_json_dep]
 
+moodycamel_option = get_option('moodycamel_executor')
+have_moodycamel_executor = false
+if not moodycamel_option.disabled()
+  cpp_compiler = meson.get_compiler('cpp')
+  have_moodycamel_executor = cpp_compiler.has_header('concurrentqueue/moodycamel/concurrentqueue.h', dependencies: common_deps) or cpp_compiler.has_header('moodycamel/concurrentqueue.h', dependencies: common_deps)
+endif
+if moodycamel_option.enabled() and not have_moodycamel_executor
+  error('moodycamel_executor enabled but concurrentqueue headers are unavailable')
+endif
+if not have_moodycamel_executor
+  add_project_arguments('-DTM_KIT_BASIC_DISABLE_MOODYCAMEL_THREADED_EXECUTOR=1', language: 'cpp')
+endif
+message('Optional moodycamel executor: ' + have_moodycamel_executor.to_string())
+
+
 if build_machine.system() == 'windows'
   add_global_arguments('-DWINVER=0x0601', language: 'cpp')
   add_global_arguments('-D_WIN32_WINNT=0x0601', language: 'cpp')
