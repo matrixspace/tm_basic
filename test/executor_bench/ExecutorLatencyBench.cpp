@@ -1,7 +1,7 @@
 #include <tm_kit/infra/RealTimeThreadedExecutor.hpp>
 #include <tm_kit/infra/RealTimeThreadedExecutor.hpp>
 #include <tm_kit/basic/EnhancedDedicatedThreadedExecutor.hpp>
-#include <tm_kit/infra/RealTimeSharedPoolExecutor.hpp>
+#include <tm_kit/basic/RealTimeSharedPoolExecutor.hpp>
 #include <tm_kit/basic/MoodycamelThreadedExecutor.hpp>
 #include <algorithm>
 #include <atomic>
@@ -320,7 +320,7 @@ int main(int argc, char **argv)
             }
         }
         if (o.engine == "pool") {
-            infra::SharedThreadPoolConfig cfg;
+            basic::SharedThreadPoolConfig cfg;
             cfg.threadCount = o.poolThreads;
             for (unsigned i = 0; i < o.poolThreads; ++i) {
                 cfg.cpus.push_back(o.consumer(i));
@@ -328,8 +328,8 @@ int main(int argc, char **argv)
 #ifndef EXECUTOR_LATENCY_BASELINE
             cfg.spinWait = std::chrono::microseconds(o.spinUs);
 #endif
-            infra::SharedThreadPool::configure(cfg);
-            return run<infra::RealTimeSharedPoolExecutor>(o);
+            basic::SharedThreadPool::configure(cfg);
+            return run<basic::RealTimeSharedPoolExecutor>(o);
         }
         if (o.engine == "inline") {
             return run<infra::InlineExecutor>(o);

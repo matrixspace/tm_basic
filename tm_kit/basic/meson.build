@@ -24,6 +24,8 @@ tm_basic_headers = [
     , 'GenericIOStreamImporterExporter.hpp'
     , 'NotConstructibleStruct.hpp'
     , 'MoodycamelThreadedExecutor.hpp'
+    , 'RealTimeSharedPoolExecutor.hpp'
+    , 'RealTimeMPSCQueue.hpp'
     , 'EnhancedDedicatedThreadedExecutor.hpp'
     , 'StructFieldInfoHelper.hpp'
     , 'StructFieldInfoHelper_Tuple.hpp'

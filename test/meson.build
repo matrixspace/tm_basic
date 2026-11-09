@@ -7,3 +7,5 @@ if build_machine.system() == 'linux'
     subdir('executor_bench')
     subdir('enhanced_dedicated_executor_test')
 endif
+
+subdir('shared_pool_executor_test')

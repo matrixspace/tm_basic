@@ -1,6 +1,6 @@
 #include <tm_kit/infra/RealTimeThreadedExecutor.hpp>
 #include <tm_kit/basic/EnhancedDedicatedThreadedExecutor.hpp>
-#include <tm_kit/infra/RealTimeSharedPoolExecutor.hpp>
+#include <tm_kit/basic/RealTimeSharedPoolExecutor.hpp>
 #include <tm_kit/basic/MoodycamelThreadedExecutor.hpp>
 #include <algorithm>
 #include <array>
@@ -666,11 +666,11 @@ int main(int argc, char **argv)
     try {
         auto o = parse(argc, argv);
 #if !defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 5
-        infra::SharedThreadPoolConfig cfg;
+        basic::SharedThreadPoolConfig cfg;
         cfg.cpus = o.consumerCpus;
         cfg.threadCount = o.poolThreads;
         cfg.maxBatch = o.maxBatch;
-        infra::SharedThreadPool::configure(cfg);
+        basic::SharedThreadPool::configure(cfg);
 #endif
 #if !defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 1
         if (o.executor == "direct") {
@@ -694,7 +694,7 @@ int main(int argc, char **argv)
 #endif
 #if !defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 5
         if (o.executor == "pool") {
-            return dispatch<infra::RealTimeSharedPoolExecutor>(o);
+            return dispatch<basic::RealTimeSharedPoolExecutor>(o);
         }
 #endif
 #if defined(TM_KIT_BASIC_HAS_MOODYCAMEL_THREADED_EXECUTOR) && (!defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 6)
