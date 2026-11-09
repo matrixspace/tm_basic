@@ -1,5 +1,4 @@
 #include <tm_kit/infra/RealTimeThreadedExecutor.hpp>
-#include <tm_kit/basic/EnhancedDedicatedThreadedExecutor.hpp>
 #include <tm_kit/basic/RealTimeSharedPoolExecutor.hpp>
 #include <tm_kit/basic/MoodycamelThreadedExecutor.hpp>
 #include <algorithm>
@@ -219,7 +218,7 @@ namespace
             }
             if (k == "--help") {
                 std::puts(
-                    "--executor direct|inline|inline-erased|dedicated|pool|moody|enhanced --scenario throughput|latency|idle\n"
+                    "--executor direct|inline|inline-erased|dedicated|pool|moody --scenario throughput|latency|idle\n"
                     "--messages N (per producer) --warmup N --producers N --nodes N --payload 0|256\n"
                     "--sample-every N (0 disables stamps) --interval-us N --pool-threads N --max-batch N\n"
                     "--idle-ms N --idle-work --producer-cpus 20,21 --consumer-cpus 24,25; one case per process");
@@ -700,11 +699,6 @@ int main(int argc, char **argv)
 #if defined(TM_KIT_BASIC_HAS_MOODYCAMEL_THREADED_EXECUTOR) && (!defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 6)
         if (o.executor == "moody") {
             return dispatch<basic::MoodycamelThreadedExecutor>(o);
-        }
-#endif
-#if !defined(EXECUTOR_BENCH_ENGINE) || EXECUTOR_BENCH_ENGINE == 7
-        if (o.executor == "enhanced") {
-            return dispatch<basic::EnhancedDedicatedThreadedExecutor>(o);
         }
 #endif
         throw std::runtime_error("unknown/unavailable executor");

@@ -8,3 +8,5 @@
 - 2026-11-09：[执行器实现分层](../../tm_infra/doc/20261105-realtime-threaded-executor/executor-layering.md)：SharedPool及其队列迁到basic，infra仅保留Inline/Dedicated默认实现。
 
 - 2026-11-09：[Enhanced取消全局FIFO后的优化](../../tm_infra/doc/20261105-realtime-threaded-executor/unordered-enhanced.md)：采用moodycamel分块队列与分片发布计数，以单生产者部分延迟代价换取多生产者吞吐。
+
+- 2026-11-09：[moodycamel执行器合并](../../tm_infra/doc/20261105-realtime-threaded-executor/moodycamel-unification.md)：只保留MoodycamelThreadedExecutor，以可用性探测控制相关目标编译。

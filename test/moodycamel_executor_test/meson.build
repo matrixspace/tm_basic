@@ -14,3 +14,7 @@ moodycamel_executor_test_exe = executable('moodycamel_executor_test'
     , install: false
 )
 test('moodycamel_executor_test', moodycamel_executor_test_exe, timeout: 180)
+
+moodycamel_queue_test = executable('moodycamel_queue_test', 'MoodycamelQueueTest.cpp',
+    include_directories: inc, dependencies: common_deps, install: false)
+test('moodycamel_queue_test', moodycamel_queue_test, timeout: 120)

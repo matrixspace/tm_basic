@@ -1,12 +1,8 @@
 #include <tm_kit/infra/Environments.hpp>
 #include <tm_kit/infra/RealTimeApp.hpp>
-#ifdef TM_KIT_BASIC_TEST_ENHANCED_EXECUTOR
-#include <tm_kit/basic/EnhancedDedicatedThreadedExecutor.hpp>
-#else
 #include <tm_kit/basic/MoodycamelThreadedExecutor.hpp>
 #ifndef TM_KIT_BASIC_HAS_MOODYCAMEL_THREADED_EXECUTOR
 #error "moodycamel concurrentqueue headers not found"
-#endif
 #endif
 
 #include <algorithm>
@@ -40,15 +36,10 @@
 using namespace dev::cd606::tm;
 
 namespace {
-#ifdef TM_KIT_BASIC_TEST_ENHANCED_EXECUTOR
-    using TestedComponent = basic::EnhancedDedicatedThreadedExecutorComponent;
-    template <class T> using TestedExecutor = basic::EnhancedDedicatedThreadedExecutor<T>;
-    constexpr char const *testedTag = " [enhanced]";
-#else
     using TestedComponent = basic::MoodycamelThreadedExecutorComponent;
     template <class T> using TestedExecutor = basic::MoodycamelThreadedExecutor<T>;
     constexpr char const *testedTag = " [moodycamel]";
-#endif
+
 
     struct TestClockComponent {
         using TimePointType = std::chrono::system_clock::time_point;

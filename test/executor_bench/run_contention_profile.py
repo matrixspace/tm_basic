@@ -49,6 +49,7 @@ def main():
     parser.add_argument('--candidate', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--summarize-only', type=Path, help='replay an existing results.jsonl without running binaries')
+    parser.add_argument('--executor', default='moody')
     parser.add_argument('--rounds', type=int, default=30)
     parser.add_argument('--seed', type=int, default=20261108)
     parser.add_argument('--messages', type=int, default=1000000)
@@ -73,7 +74,7 @@ def main():
                 rng.shuffle(labels)
                 for label in labels:
                     binary = (opt.candidate if label == 'candidate' else opt.baseline).resolve()
-                    cmd = ['taskset', '-c', opt.cpus, str(binary), '--executor', 'enhanced',
+                    cmd = ['taskset', '-c', opt.cpus, str(binary), '--executor', opt.executor,
                            '--producers', str(opt.producers), '--messages', str(opt.messages),
                            '--producer-cpus', opt.producer_cpus, '--consumer-cpus', opt.consumer_cpus]
                     row = json.loads(subprocess.check_output(cmd, text=True, timeout=90))

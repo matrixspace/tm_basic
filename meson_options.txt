@@ -1,0 +1,1 @@
+option('moodycamel_executor', type: 'feature', value: 'auto', description: 'Build optional moodycamel executor tests and benchmarks when headers are available')

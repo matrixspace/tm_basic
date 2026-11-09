@@ -1,6 +1,5 @@
 #include <tm_kit/infra/RealTimeThreadedExecutor.hpp>
 #include <tm_kit/infra/RealTimeThreadedExecutor.hpp>
-#include <tm_kit/basic/EnhancedDedicatedThreadedExecutor.hpp>
 #include <tm_kit/basic/RealTimeSharedPoolExecutor.hpp>
 #include <tm_kit/basic/MoodycamelThreadedExecutor.hpp>
 #include <algorithm>
@@ -334,16 +333,15 @@ int main(int argc, char **argv)
         if (o.engine == "inline") {
             return run<infra::InlineExecutor>(o);
         }
-        if (o.engine == "enhanced") {
-            return run<basic::EnhancedDedicatedThreadedExecutor>(o);
-        }
         if (o.engine == "dedicated") {
             return run<infra::DedicatedThreadExecutor>(o);
         }
+#ifdef TM_KIT_BASIC_HAS_MOODYCAMEL_THREADED_EXECUTOR
         if (o.engine == "moody") {
             return run<basic::MoodycamelThreadedExecutor>(o);
         }
-        throw std::runtime_error("unknown executor");
+#endif
+        throw std::runtime_error("unknown/unavailable executor");
     } catch (std::exception const &e) {
         std::fprintf(stderr, "%s\n", e.what());
         return 2;

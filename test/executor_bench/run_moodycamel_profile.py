@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare unpooled/pooled Enhanced binaries; keep allocation hooks out of timing."""
+"""Compare moodycamel executor binaries; keep allocation hooks out of timing."""
 import argparse
 import hashlib
 import json
@@ -21,6 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for arg in ('baseline', 'candidate', 'baseline-counts', 'candidate-counts', 'output'):
         parser.add_argument('--'+arg, type=Path, required=True)
+    parser.add_argument('--executor', default='moody')
     parser.add_argument('--repeats', type=int, default=5)
     opt = parser.parse_args()
     opt.output.mkdir(parents=True, exist_ok=True)
@@ -34,7 +35,7 @@ def main():
                 for repeat in range(1 if counted else opt.repeats):
                     for version in (('baseline', 'candidate') if repeat % 2 == 0 else ('candidate', 'baseline')):
                         key = version+('-counts' if counted else '')
-                        cmd = ['taskset', '-c', '20-27', str(binaries[key]), '--executor', 'enhanced',
+                        cmd = ['taskset', '-c', '20-27', str(binaries[key]), '--executor', opt.executor,
                                '--producer-cpus', '20,21,22,23', '--consumer-cpus', '24,25,26,27', *args]
                         result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, check=True)
                         row = json.loads(result.stdout)
@@ -46,7 +47,7 @@ def main():
                         output.flush()
             print(name+' complete', flush=True)
     with (opt.output/'summary.md').open('w') as output:
-        output.write(f'# Enhanced MPSC node recycling\n\nGCC 15, C++17, `-O3 -pthread`; {opt.repeats} alternating runs; CPU 20–23 producers, 24–27 consumer. CPU includes coordination; sparse pacing is part of the producer measurement. Counts are separate runs.\n\n')
+        output.write(f'# Moodycamel executor comparison\n\nGCC 15, C++17, `-O3 -pthread`; {opt.repeats} alternating runs; CPU 20–23 producers, 24–27 consumer. CPU includes coordination; sparse pacing is part of the producer measurement. Counts are separate runs.\n\n')
         output.write('| Case | CPU ns/item before→after | wall ns/item before→after | p50 ns before→after | p99 ns before→after | allocations before→after |\n|---|---:|---:|---:|---:|---:|\n')
         for name, _ in cases():
             results = []

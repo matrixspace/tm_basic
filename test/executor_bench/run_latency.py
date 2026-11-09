@@ -10,7 +10,7 @@ import random
 parser = argparse.ArgumentParser(description='Process-isolated end-to-end executor latency comparison')
 parser.add_argument('--baseline', type=pathlib.Path)
 parser.add_argument('--candidate-only', action='store_true')
-parser.add_argument('--engines', default='inline,dedicated,pool,moody', help='comma-separated pipeline engines, including enhanced when selected explicitly')
+parser.add_argument('--engines', default='inline,dedicated,pool,moody', help='comma-separated pipeline engines')
 parser.add_argument('--warmup', type=int, default=2000)
 parser.add_argument('--candidate', type=pathlib.Path, required=True)
 parser.add_argument('--output', type=pathlib.Path, required=True)
@@ -38,7 +38,7 @@ spin_values = sorted(set([0] + [int(v) for v in opt.spins.split(',')]))
 if not opt.candidate_only and not opt.baseline:
     parser.error('--baseline is required unless --candidate-only')
 engines = list(dict.fromkeys(opt.engines.split(',')))
-if not engines or any(e not in ('inline', 'dedicated', 'pool', 'moody', 'enhanced') for e in engines):
+if not engines or any(e not in ('inline', 'dedicated', 'pool', 'moody') for e in engines):
     parser.error('invalid --engines list')
 out = opt.output
 out.mkdir(parents=True, exist_ok=True)

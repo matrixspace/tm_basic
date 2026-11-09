@@ -1,4 +1,4 @@
-#include <tm_kit/basic/EnhancedDedicatedThreadedExecutor.hpp>
+#include <tm_kit/basic/MoodycamelThreadedExecutor.hpp>
 #include <array>
 #include <iostream>
 #include <stdexcept>
@@ -13,7 +13,7 @@ namespace
     }
     void queueBlockStressTest()
     {
-        using Queue = basic::enhanced_dedicated_executor_detail::MPSCQueue<std::pair<unsigned, unsigned>>;
+        using Queue = basic::moodycamel_threaded_executor_detail::MPSCQueue<std::pair<unsigned, unsigned>>;
         Queue queue;
         constexpr unsigned producers = 16, count = 100000;
         std::array<unsigned, producers> expected{};
@@ -58,7 +58,7 @@ namespace
     void producerChurnTest()
     {
         for (unsigned lifetime = 0; lifetime < 8; ++lifetime) {
-            basic::enhanced_dedicated_executor_detail::MPSCQueue<unsigned> queue;
+            basic::moodycamel_threaded_executor_detail::MPSCQueue<unsigned> queue;
             for (unsigned generation = 0; generation < 32; ++generation) {
                 std::thread producer([&] {
                     for (unsigned i = 0; i < 1000; ++i) {
@@ -110,7 +110,7 @@ namespace
     bool Item::throwMove = false;
     void queueTest()
     {
-        using Q = basic::enhanced_dedicated_executor_detail::MPSCQueue<Item>;
+        using Q = basic::moodycamel_threaded_executor_detail::MPSCQueue<Item>;
         {
             Q queue;
             bool called = false;
@@ -160,8 +160,8 @@ namespace
         }
         return true;
     }
-    using Exec = basic::EnhancedDedicatedThreadedExecutor<std::pair<unsigned, unsigned>>;
-    struct SelectedEnv : basic::EnhancedDedicatedThreadedExecutorComponent {};
+    using Exec = basic::MoodycamelThreadedExecutor<std::pair<unsigned, unsigned>>;
+    struct SelectedEnv : basic::MoodycamelThreadedExecutorComponent {};
     static_assert(std::is_same_v<infra::RealTimeThreadedExecutorFor<SelectedEnv, std::pair<unsigned, unsigned>>, Exec>);
     struct Host {
         Exec *exec;
@@ -207,7 +207,7 @@ namespace
         opts.trackPendingCount = true;
         auto *exec = new Exec(opts);
         auto *host = new Host{exec};
-        check(!exec->push({0, 0}), "enhanced rejects pushes before start");
+        check(!exec->push({0, 0}), "moodycamel rejects pushes before start");
         exec->start(host);
         std::array<std::thread, 4> producers;
         for (unsigned p = 0; p < 4; ++p) {
@@ -221,16 +221,16 @@ namespace
             thread.join();
         }
         host->ready.store(true, std::memory_order_release);
-        check(wait([&] { return host->count.load(std::memory_order_acquire) == 40000; }) && host->errors == 0, "enhanced starts once and drains concurrent producers in FIFO order");
-        check(host->firstBatch == 40000 && exec->threadHandle().has_value(), "enhanced preserves batch counts and native handle");
+        check(wait([&] { return host->count.load(std::memory_order_acquire) == 40000; }) && host->errors == 0, "moodycamel starts once and drains concurrent producers in FIFO order");
+        check(host->firstBatch == 40000 && exec->threadHandle().has_value(), "moodycamel preserves batch counts and native handle");
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        check(host->idle == 0, "enhanced sleeps without periodic idle work");
+        check(host->idle == 0, "moodycamel sleeps without periodic idle work");
         host->wantsIdle = true;
         exec->wakeIdle();
-        check(wait([&] { return host->idle > 2; }), "enhanced wakeIdle activates periodic idle work");
+        check(wait([&] { return host->idle > 2; }), "moodycamel wakeIdle activates periodic idle work");
         host->stopInCallback = true;
         exec->push({0, 10000});
-        check(wait([&] { return host->count.load(std::memory_order_acquire) == 40001; }) && !exec->push({0, 10001}), "enhanced stop is callback safe and rejects later pushes");
+        check(wait([&] { return host->count.load(std::memory_order_acquire) == 40001; }) && !exec->push({0, 10001}), "moodycamel stop is callback safe and rejects later pushes");
     }
     void sleepingPublicationTest()
     {

@@ -12,8 +12,11 @@ endforeach
 
 # Compile each backend independently for comparisons: unrelated executor
 # template changes must not affect shared callback inlining decisions.
-engine_names = ['direct', 'inline', 'inline_erased', 'dedicated', 'pool', 'moody', 'enhanced']
+engine_names = ['direct', 'inline', 'inline_erased', 'dedicated', 'pool', 'moody']
 foreach index : range(engine_names.length())
+    if engine_names[index] == 'moody' and not have_moodycamel_executor
+        continue
+    endif
     foreach instrumented : [false, true]
         suffix = instrumented ? '_counts' : ''
         executable('executor_bench_' + engine_names[index] + suffix,
