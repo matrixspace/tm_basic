@@ -11,7 +11,7 @@ namespace
         std::cout << (ok ? "ok: " : "FAIL: ") << name << '\n';
         failures += !ok;
     }
-    void queueRecycleStressTest()
+    void queueBlockStressTest()
     {
         using Queue = basic::enhanced_dedicated_executor_detail::MPSCQueue<std::pair<unsigned, unsigned>>;
         Queue queue;
@@ -42,9 +42,8 @@ namespace
         for (auto &thread : threads) {
             thread.join();
         }
-        check(ordered && !queue.maybeNonEmpty(), "recycle contention preserves exact counts and producer FIFO");
-        // Exercise repeated ring wrap, full-cache eviction and destruction with
-        // outstanding values after all producer threads have exited.
+        check(ordered && !queue.maybeNonEmpty(), "publication shard collisions preserve exact counts and producer FIFO");
+        // Exercise repeated block turnover after all initial producers exit.
         for (unsigned round = 0; round < 1000; ++round) {
             for (unsigned i = 0; i < 513; ++i) {
                 queue.push({0, i});
@@ -53,8 +52,33 @@ namespace
                 ordered = queue.tryConsume([&](auto &&item) { ordered = ordered && item.second == i; }) && ordered;
             }
         }
-        check(ordered, "recycle cache wraps and evicts excess nodes without changing FIFO");
+        check(ordered, "reusable blocks preserve per-producer FIFO across repeated bursts");
         queue.push({0, 0});
+    }
+    void producerChurnTest()
+    {
+        for (unsigned lifetime = 0; lifetime < 8; ++lifetime) {
+            basic::enhanced_dedicated_executor_detail::MPSCQueue<unsigned> queue;
+            for (unsigned generation = 0; generation < 32; ++generation) {
+                std::thread producer([&] {
+                    for (unsigned i = 0; i < 1000; ++i) {
+                        queue.push(unsigned(i));
+                    }
+                });
+                producer.join();
+                unsigned expected = 0;
+                while (queue.tryConsume([&](unsigned &&i) {
+                    if (i != expected++) {
+                        ++failures;
+                    }
+                })) {
+                }
+                if (expected != 1000 || queue.maybeNonEmpty()) {
+                    ++failures;
+                }
+            }
+        }
+        check(failures == 0, "producer exit and queue address reuse preserve ownership and counts");
     }
     struct Item {
         static int moves, live;
@@ -112,14 +136,14 @@ namespace
             } catch (std::runtime_error const &) {
             }
             Item::throwMove = false;
-            check(!queue.maybeNonEmpty() && Item::live == 1, "cached-node construction exception releases node without retaining Item");
+            check(!queue.maybeNonEmpty() && Item::live == 1, "reused-block construction exception does not retain Item");
             queue.push(Item(9));
             queue.push(Item(10));
             try {
                 queue.tryConsume([](Item &&) { throw std::runtime_error("consume"); });
             } catch (std::runtime_error const &) {
             }
-            check(queue.tryConsume([&](Item &&x) { observed = x.value; }) && observed == 10, "throwing consumer leaves valid FIFO stub");
+            check(queue.tryConsume([&](Item &&x) { observed = x.value; }) && observed == 10, "throwing consumer preserves remaining producer sequence");
             queue.push(Item(11)); // destructor drops a still-queued item
         }
         check(Item::live == 0, "queue drains/destroys all item lifetimes");
@@ -208,6 +232,28 @@ namespace
         exec->push({0, 10000});
         check(wait([&] { return host->count.load(std::memory_order_acquire) == 40001; }) && !exec->push({0, 10001}), "enhanced stop is callback safe and rejects later pushes");
     }
+    void sleepingPublicationTest()
+    {
+        for (unsigned spinUs : {0U, 200U}) {
+            infra::ThreadedExecOptions opts;
+            opts.spinWait = std::chrono::microseconds(spinUs);
+            auto *exec = new Exec(opts);
+            auto *host = new Host{exec};
+            host->ready = true;
+            exec->start(host);
+            bool delivered = true;
+            for (unsigned i = 0; i < 1000; ++i) {
+                std::this_thread::sleep_for(std::chrono::microseconds(300));
+                exec->push({0, i});
+                if (!wait([&] { return host->count.load(std::memory_order_acquire) == i + 1; })) {
+                    delivered = false;
+                    break;
+                }
+            }
+            check(delivered && host->errors == 0, "publication alone wakes a sleeping consumer without idle tokens");
+            exec->stop();
+        }
+    }
     void wakeRaceTest()
     {
         for (unsigned spinUs : {0U, 200U}) {
@@ -246,8 +292,10 @@ namespace
 int main()
 {
     queueTest();
-    queueRecycleStressTest();
+    queueBlockStressTest();
+    producerChurnTest();
     executorTest();
+    sleepingPublicationTest();
     wakeRaceTest();
     return failures ? 1 : 0;
 }

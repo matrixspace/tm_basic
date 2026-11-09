@@ -16,7 +16,7 @@ meson test -C builddir_release --no-rebuild enhanced_dedicated_executor_test enh
 ```
 
 The direct tests cover 16 producers (including shard collisions), exact FIFO
-within each producer, repeated cache overflow/reuse, move-only non-default
+within each producer, repeated block turnover/reuse, move-only non-default
 payloads, throwing construction/consumption, destruction with queued data,
 startup, tracked pending counts, dynamic idle work and callback-safe stop.
 The handler target reuses the existing executor integration suite with Enhanced
@@ -26,18 +26,26 @@ infra default as a comparison. Detached test hosts deliberately outlive callback
 
 Sanitizers can compile the direct test with `-std=c++17 -O1 -g -pthread`,
 `-fsanitize=thread` or `-fsanitize=address,undefined`; supply the infra/basic
-source include roots and installed Boost include directory. Use
+source include roots and installed concurrentqueue include directory. Use
 `ASAN_OPTIONS=detect_leaks=0` for the intentionally retained detached hosts.
 Timing/allocation comparisons belong in `../executor_bench` and must not run
 concurrently with builds or sanitizer stress tests.
 
-[Task record](../../../tm_infra/doc/20261105-realtime-threaded-executor/mpsc-node-recycling.md)
+[Task record](../../../tm_infra/doc/20261105-realtime-threaded-executor/unordered-enhanced.md)
 
-Node recycling uses eight shards, each with a 32-pointer Boost SPSC queue and
-an eight-pointer read batch protected by the shard admission flag. The queue
-owns both buffers; producer exit needs no cleanup callback. At most 320 empty
-nodes can be retained; overflow still goes to delete and misses to new.
+The queue now uses moodycamel ConcurrentQueue reusable 256-item blocks, implicit producer
+registration and one ConsumerToken. A custom assignment sink invokes the callback
+without an extra Item move. Only each producer's order is preserved; cross-producer
+FIFO is not guaranteed. Publication counters use eight cache-line-separated shards;
+thread-local state retains an integer, not a queue address. Size estimates are only
+active-wait hints; sleep uses publication counts. Producer churn/address reuse is
+covered by an additional lifecycle test. Block memory retention depends on peak
+backlog and producer registrations; the former 320-node cache bound no longer applies.
 
 The direct suite also races 20000 input messages with 20000 idle wake/state
 changes, both with spinWait=0 and 200us, then checks final idle activation and
-stop. This covers conditional wake acknowledgement and active link polling.
+stop. This covers conditional wake acknowledgement and active queue hints.
+
+The sleep publication test sends 1000 paced items without idle wake tokens at
+spinWait=0 and 200us. TSan emits GCC warnings for fences inside concurrentqueue;
+no runtime race report was observed, but those fences are not modeled by TSan.

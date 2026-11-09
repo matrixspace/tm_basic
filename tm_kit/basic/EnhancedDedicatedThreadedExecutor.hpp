@@ -1,7 +1,11 @@
 #ifndef TM_KIT_BASIC_ENHANCED_DEDICATED_THREADED_EXECUTOR_HPP_
 #define TM_KIT_BASIC_ENHANCED_DEDICATED_THREADED_EXECUTOR_HPP_
 #include <tm_kit/infra/RealTimeThreadedExecutor.hpp>
-#include <boost/lockfree/spsc_queue.hpp>
+#if __has_include(<concurrentqueue/moodycamel/concurrentqueue.h>)
+#include <concurrentqueue/moodycamel/concurrentqueue.h>
+#else
+#include <moodycamel/concurrentqueue.h>
+#endif
 #include <array>
 namespace dev
 {
@@ -14,164 +18,72 @@ namespace dev
                 using infra::ThreadedExecOptions;
                 namespace enhanced_dedicated_executor_detail
                 {
-                    //Vyukov intrusive unbounded MPSC queue with a stub node.
-                    //link publication uses one exchange + one store; allocation may block.
-                    //The global order is
-                    //the exchange order, so items of all producers form one FIFO.
+                    // Per-producer FIFO only. ConcurrentQueue owns reusable blocks.
                     template <class Item>
                     class MPSCQueue {
-                    private:
-                        struct Node {
-                            std::atomic<Node *> next{nullptr};
-                            std::optional<Item> value;
-                            unsigned shard = 0;
-                            Node() = default;
+                        struct Traits : moodycamel::ConcurrentQueueDefaultTraits {
+                            static constexpr std::size_t BLOCK_SIZE = 256;
                         };
-                        // Sharded bounded Boost.Lockfree recycle queues. A node returns to the
-                        // shard that allocated it. Thread-local state is only an integer,
-                        // never a queue pointer: producer exit and queue destruction do
-                        // not leave dangling registrations. Colliding producers bypass a busy cache.
-                        static constexpr std::size_t recycleShards = 8;
-                        static constexpr std::size_t recycleCapacity = 32;
-                        struct RecycleCache {
-                            boost::lockfree::spsc_queue<Node *, boost::lockfree::capacity<recycleCapacity>> queue;
-                            // Queue consumer returns nodes (one writer). Producers take
-                            // nodes as one logical reader, with nonblocking admission.
-                            // Collisions bypass the cache rather than spin on this flag.
-                            alignas(64) std::atomic_flag reading = ATOMIC_FLAG_INIT;
-                            // Protected by reading: amortize queue index synchronization.
-                            // Stored in the queue, so producer exit cannot strand nodes.
-                            std::array<Node *, 8> local{};
-                            std::size_t available = 0;
+                        moodycamel::ConcurrentQueue<Item, Traits> queue_;
+                        moodycamel::ConsumerToken consumer_{queue_};
+                        struct alignas(64) Publication {
+                            std::atomic<std::size_t> count{0};
                         };
-                        std::array<RecycleCache, recycleShards> recycled_;
-
+                        std::array<Publication, 8> published_{};
+                        // TLS contains no queue/token pointer and outlives no queue state.
                         static unsigned producerShard()
                         {
                             static std::atomic<unsigned> next{0};
-                            thread_local unsigned const shard = next.fetch_add(1, std::memory_order_relaxed) % recycleShards;
+                            static thread_local unsigned const shard = next.fetch_add(1, std::memory_order_relaxed) % 8;
                             return shard;
                         }
-                        Node *acquireNode()
-                        {
-                            auto shard = producerShard();
-                            Node *n = nullptr;
-                            auto &cache = recycled_[shard];
-                            if (!cache.reading.test_and_set(std::memory_order_acquire)) {
-                                if (cache.available == 0) {
-                                    cache.available = cache.queue.pop(cache.local.data(), cache.local.size());
-                                }
-                                if (cache.available) {
-                                    n = cache.local[--cache.available];
-                                }
-                                cache.reading.clear(std::memory_order_release);
+                        alignas(64) std::size_t consumed_ = 0;
+                        template <class F>
+                        struct Sink {
+                            F &consume;
+                            std::size_t &consumed;
+                            void operator=(Item &&item)
+                            {
+                                ++consumed;
+                                consume(std::move(item));
                             }
-                            if (n) {
-                                n->next.store(nullptr, std::memory_order_relaxed);
-                            } else {
-                                n = new Node();
-                                n->shard = shard;
-                            }
-                            return n;
-                        }
-                        void recycleNode(Node *n)
-                        {
-                            if (!recycled_[n->shard].queue.push(n)) {
-                                delete n;
-                            }
-                        }
-                        //written by producers
-                        alignas(64) std::atomic<Node *> head_;
-                        //owned by the single consumer
-                        alignas(64) Node *tail_;
+                        };
 
                     public:
-                        MPSCQueue()
-                            : head_(nullptr)
-                            , tail_(nullptr)
+                        void push(Item &&item)
                         {
-                            Node *stub = new Node();
-                            head_.store(stub, std::memory_order_relaxed);
-                            tail_ = stub;
-                        }
-                        ~MPSCQueue()
-                        {
-                            for (auto &cache : recycled_) {
-                                while (cache.available) {
-                                    delete cache.local[--cache.available];
-                                }
-                                Node *cached;
-                                while (cache.queue.pop(cached)) {
-                                    delete cached;
-                                }
+                            if (!queue_.enqueue(std::move(item))) {
+                                throw std::bad_alloc();
                             }
-                            Node *n = tail_;
-                            while (n) {
-                                Node *next = n->next.load(std::memory_order_relaxed);
-                                delete n;
-                                n = next;
-                            }
+                            // This RMW also pairs with the consumer's sleeping store.
+                            published_[producerShard()].count.fetch_add(1, std::memory_order_seq_cst);
                         }
-                        MPSCQueue(MPSCQueue const &) = delete;
-                        MPSCQueue &operator=(MPSCQueue const &) = delete;
-                        //any thread. The exchange is seq_cst: together with the
-                        //seq_cst load of the sleeping flag that follows it in the
-                        //executor, and the consumer's seq_cst store of that flag
-                        //followed by maybeNonEmpty(), it forms a Dekker handshake
-                        //(either the consumer sees the item or the producer sees the
-                        //consumer sleeping). Plain seq_cst operations are used instead of
-                        //atomic_thread_fence so that TSan can check the protocol.
-                        void push(Item &&x)
-                        {
-                            std::unique_ptr<Node> owned(acquireNode());
-                            // Reclaim the empty node even if Item construction throws.
-                            owned->value.emplace(std::move(x));
-                            Node *n = owned.release();
-                            Node *prev = head_.exchange(n, std::memory_order_seq_cst);
-                            prev->next.store(n, std::memory_order_release);
-                        }
-                        //consumer only; may transiently report empty while a producer
-                        //is between its exchange and its link store, the wake-up
-                        //protocol of the executor covers that window
                         template <class F>
                         bool tryConsume(F &&consume)
                         {
-                            Node *next = tail_->next.load(std::memory_order_acquire);
-                            if (!next) {
-                                return false;
-                            }
-                            Node *old = tail_;
-                            tail_ = next;
-                            recycleNode(old);
-                            // The new tail remains the queue's stub. Its item
-                            // can be consumed in place, without a second move.
-                            // Reset also on exceptions, leaving a valid stub.
-                            struct Reset {
-                                std::optional<Item> &value;
-                                ~Reset()
-                                {
-                                    value.reset();
-                                }
-                            } reset{next->value};
-                            std::forward<F>(consume)(std::move(*next->value));
-                            return true;
+                            Sink<F> sink{consume, consumed_};
+                            return queue_.try_dequeue(consumer_, sink);
                         }
-                        // Consumer only: active polling observes completed publication.
-                        bool hasPublishedItem() const
-                        {
-                            return tail_->next.load(std::memory_order_acquire) != nullptr;
-                        }
-                        // Consumer only. Keep the seq_cst head read for the sleep
-                        // handshake, including the exchange-before-link window.
+                        // Consumer only. If a producer observes sleeping=false before
+                        // its seq_cst store, the count RMW precedes this scan in the
+                        // seq_cst order. Otherwise it takes the notify mutex. Thus an
+                        // enqueue cannot be missed by both the scan and notification.
+                        // A dequeue may precede its count increment: inequality then
+                        // conservatively stays awake until publication completes.
                         bool maybeNonEmpty() const
                         {
-                            return head_.load(std::memory_order_seq_cst) != tail_;
+                            std::size_t total = 0;
+                            for (auto const &slot : published_) {
+                                total += slot.count.load(std::memory_order_seq_cst);
+                            }
+                            return total != consumed_;
+                        }
+                        // Hint only: never the sole predicate for blocking/idle.
+                        bool hasPublishedItem() const
+                        {
+                            return queue_.size_approx() != 0;
                         }
                     };
-
-                    //everything the execution thread touches lives here and is shared
-                    //with that (detached) thread, so the executor object itself may be
-                    //destroyed while the thread is still winding down
                     template <class Item>
                     struct DedicatedThreadState {
                         ThreadedExecOptions opts;
@@ -196,10 +108,10 @@ namespace dev
                     };
                 } // namespace enhanced_dedicated_executor_detail
 
-                //Default executor: one dedicated (detached) thread per node.
+                //Optional executor: one dedicated (detached) thread per node.
                 //Blocking: the producer only takes the mutex / notifies when the consumer
                 //has announced it is about to sleep (eventcount style), so the hot path
-                //avoids per-item notification while the consumer is active; node
+                //avoids per-item notification while the consumer is active; block
                 //allocation on cache misses still has its own costs. While the host has idle work the
                 //consumer waits at most Config::idlePeriod and then calls the idle work,
                 //otherwise it sleeps until push / stop / wakeIdle.
@@ -213,7 +125,7 @@ namespace dev
 
                     static void wakeIfSleeping(State *s)
                     {
-                        //seq_cst load after the seq_cst exchange in queue.push; pairs
+                        //seq_cst load after publication in queue.push; pairs
                         //with the seq_cst store + maybeNonEmpty() in waitForWork
                         if (s->sleeping.load(std::memory_order_seq_cst)) {
                             s->notifyLocked();
@@ -300,9 +212,8 @@ namespace dev
                             if (!s->running.load(std::memory_order_acquire)) {
                                 return;
                             }
-                            // A published link proves there is work without reading
-                            // the producer-owned head cache line. Still check head
-                            // before idle to cover a producer's unpublished link.
+                            // The approximate size is only an active-path hint. Check
+                            // exact publication counts before idle or sleep.
                             if (!s->queue.hasPublishedItem() && !s->queue.maybeNonEmpty()) {
                                 //timed out (or woken by wakeIdle) with nothing pending
                                 h->executorIdleWork();
@@ -342,7 +253,14 @@ namespace dev
                         if (s->opts.trackPendingCount) {
                             s->pending.fetch_add(1, std::memory_order_relaxed);
                         }
-                        s->queue.push(std::move(x));
+                        try {
+                            s->queue.push(std::move(x));
+                        } catch (...) {
+                            if (s->opts.trackPendingCount) {
+                                s->pending.fetch_sub(1, std::memory_order_relaxed);
+                            }
+                            throw;
+                        }
                         wakeIfSleeping(s);
                         return true;
                     }

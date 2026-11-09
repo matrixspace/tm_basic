@@ -240,3 +240,5 @@ python3 test/executor_bench/run_contention_profile.py \
 ```
 
 复算使用与测量相同的 `--seed`（默认20261108）。区间仅描述当前负载和机器的测量，不代表所有部署环境。
+
+Enhanced现使用moodycamel分块ConcurrentQueue，保证每生产者顺序，不保证跨生产者全局FIFO。独立Moodycamel执行器仍为BlockingConcurrentQueue适配器；Enhanced保留原位消费、分片发布计数与独立睡眠协议。吞吐与延迟的本轮比较见 [任务记录](../../../tm_infra/doc/20261105-realtime-threaded-executor/unordered-enhanced.md)。
