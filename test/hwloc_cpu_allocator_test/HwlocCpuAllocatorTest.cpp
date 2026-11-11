@@ -1,5 +1,7 @@
 #include <tm_kit/basic/HwlocThreadCpuAllocator.hpp>
+#ifdef TM_KIT_BASIC_HAS_MOODYCAMEL_THREADED_EXECUTOR
 #include <tm_kit/basic/MoodycamelThreadedExecutor.hpp>
+#endif
 #include <tm_kit/basic/RealTimeSharedPoolExecutor.hpp>
 #include <tm_kit/infra/Environments.hpp>
 #include <tm_kit/infra/RealTimeApp.hpp>
@@ -294,7 +296,9 @@ namespace
     };
     using BaseEnv = infra::Environment<infra::CheckTimeComponent<false>, infra::TrivialExitControlComponent, ClockComponent>;
     using DedicatedEnv = infra::Environment<infra::CheckTimeComponent<false>, infra::TrivialExitControlComponent, ClockComponent, basic::HwlocThreadCpuAllocatorComponent>;
+#ifdef TM_KIT_BASIC_HAS_MOODYCAMEL_THREADED_EXECUTOR
     using MoodyEnv = infra::Environment<infra::CheckTimeComponent<false>, infra::TrivialExitControlComponent, ClockComponent, basic::MoodycamelThreadedExecutorComponent, basic::HwlocThreadCpuAllocatorComponent>;
+#endif
     // SharedPool has no dedicated per-node thread, so it must reject CpuAutoBind
     // even when an allocator is available.
     using PoolEnv = infra::Environment<infra::CheckTimeComponent<false>, infra::TrivialExitControlComponent, ClockComponent, basic::RealTimeSharedPoolExecutorComponent, basic::HwlocThreadCpuAllocatorComponent>;
@@ -374,6 +378,12 @@ namespace
     }
 
 
+    // Usable cores of the allocator serving DedicatedEnv (the process-wide one).
+    std::size_t combinedUsableCores()
+    {
+        return basic::HwlocThreadCpuAllocator::instance().usableCores().size();
+    }
+
     void userThreadLeaseTest()
     {
         using M = infra::RealTimeApp<DedicatedEnv>;
@@ -389,7 +399,16 @@ namespace
         std::mutex m;
         std::atomic<int> shared{0}, bound{0}, ready{0};
         std::atomic<bool> go{false}, hold{true};
-        constexpr int kThreads = 8;
+        // The node above already holds one core. Never ask for more threads than
+        // there are free cores: an exhausted allocator is a capacity limit, and an
+        // uncaught exception in a thread function would terminate the test.
+        // (cores above only tracks the node's core, so count from the allocator.)
+        std::size_t const totalCores = combinedUsableCores();
+        int const kThreads = (int)std::min<std::size_t>(8, totalCores > 1 ? totalCores - 1 : 0);
+        if (kThreads < 2) {
+            std::cout << "skip: fewer than 3 usable cores (" << totalCores << ")\n";
+            return;
+        }
         std::vector<std::thread> ts;
         for (int i = 0; i < kThreads; ++i) {
             ts.emplace_back([&, i] {
@@ -422,7 +441,7 @@ namespace
         for (auto &t : ts) {
             t.join();
         }
-        check(shared.load() == 0, "user lease: 8 concurrent user threads and a node thread all on distinct physical cores");
+        check(shared.load() == 0, "user lease: " + std::to_string(kThreads) + " concurrent user threads and a node thread all on distinct physical cores");
         // All user leases returned: the same number of cores is free again.
         std::vector<std::unique_ptr<infra::ThreadCpuLease>> again;
         std::thread th([&] {
@@ -440,7 +459,11 @@ namespace
     void graphTest()
     {
         graphAutoBind<DedicatedEnv>("dedicated");
+#ifdef TM_KIT_BASIC_HAS_MOODYCAMEL_THREADED_EXECUTOR
         graphAutoBind<MoodyEnv>("moodycamel");
+#else
+        std::cout << "skip: moodycamel executor not built\n";
+#endif
         graphOnNumaTest();
         userThreadLeaseTest();
         using M = infra::RealTimeApp<PoolEnv>;

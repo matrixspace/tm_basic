@@ -75,12 +75,7 @@ namespace dev
                     HwlocThreadCpuAllocator &operator=(HwlocThreadCpuAllocator const &) = delete;
                     ~HwlocThreadCpuAllocator() override
                     {
-                        if (cpuBind_) {
-                            hwloc_bitmap_free(cpuBind_);
-                        }
-                        if (topology_) {
-                            hwloc_topology_destroy(topology_);
-                        }
+                        discardModel();
                     }
 
                     // Must be called before the first acquire(); afterwards, or while
@@ -119,15 +114,23 @@ namespace dev
 
                     void reserve(std::vector<int> const &cpus, std::string const &who) override
                     {
+                        // allowedString_ is read directly: allowedList() would lock mutex_
+                        // again (non-recursive) and deadlock.
                         std::lock_guard<std::mutex> _(mutex_);
                         ensureLoaded();
                         for (int c : cpus) {
                             if (!pusAllowed_.count(c)) {
-                                throw CpuAutoBindError("CpuAutoBind: CPU " + std::to_string(c) + " reserved by " + who + " is not a PU available to this process (" + allowedList() + ")");
+                                throw CpuAutoBindError("CpuAutoBind: CPU " + std::to_string(c) + " reserved by " + who + " is not a PU available to this process (" + allowedString_ + ")");
                             }
-                            auto it = assignedCpus_.find(c);
-                            if (it != assignedCpus_.end()) {
-                                throw CpuAutoBindError("CpuAutoBind: CPU " + std::to_string(c) + " reserved by " + who + " is already automatically assigned to " + it->second);
+                            // Check the whole physical core: an automatic assignment on an
+                            // SMT sibling also takes this core, so reserving this CPU
+                            // would put two busy threads on one core.
+                            for (int sibling : corePus(c)) {
+                                auto it = assignedCpus_.find(sibling);
+                                if (it != assignedCpus_.end()) {
+                                    throw CpuAutoBindError("CpuAutoBind: CPU " + std::to_string(c) + " reserved by " + who
+                                        + " shares a physical core with CPU " + std::to_string(sibling) + ", already automatically assigned to " + it->second);
+                                }
                             }
                         }
                         for (int c : cpus) {
@@ -192,15 +195,42 @@ namespace dev
                             return;
                         }
                         if (hwloc_topology_init(&topology_) != 0) {
+                            topology_ = nullptr;
                             throw CpuAutoBindError("CpuAutoBind: hwloc_topology_init failed");
                         }
+                        // Keep PUs the process may not use: otherwise a cgroup/taskset
+                        // mask exposing one SMT thread per core makes the core look
+                        // complete and RequireFullCore would accept it.
+                        hwloc_topology_set_flags(topology_, HWLOC_TOPOLOGY_FLAG_INCLUDE_DISALLOWED);
                         if (hwloc_topology_load(topology_) != 0) {
                             hwloc_topology_destroy(topology_);
                             topology_ = nullptr;
                             throw CpuAutoBindError("CpuAutoBind: hwloc_topology_load failed");
                         }
-                        buildModel();
+                        try {
+                            buildModel();
+                        } catch (...) {
+                            // Nothing may survive a failed load: a retry would append
+                            // to the partially built model and double the core count.
+                            discardModel();
+                            throw;
+                        }
                         loaded_ = true;
+                    }
+
+                    void discardModel() noexcept
+                    {
+                        if (cpuBind_) {
+                            hwloc_bitmap_free(cpuBind_);
+                            cpuBind_ = nullptr;
+                        }
+                        if (topology_) {
+                            hwloc_topology_destroy(topology_);
+                            topology_ = nullptr;
+                        }
+                        allowedString_.clear();
+                        pusAllowed_.clear();
+                        cores_.clear();
                     }
 
                     void buildModel()
@@ -325,6 +355,17 @@ namespace dev
                         std::string r(s);
                         std::free(s);
                         return r;
+                    }
+
+                    // All PUs of the physical core holding cpu (cpu itself if none).
+                    std::vector<int> corePus(int cpu) const
+                    {
+                        for (auto const &core : cores_) {
+                            if (std::find(core.pus.begin(), core.pus.end(), cpu) != core.pus.end()) {
+                                return core.pus;
+                            }
+                        }
+                        return {cpu};
                     }
 
                     bool coreAvailable(CoreInfo const &core) const
