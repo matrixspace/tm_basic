@@ -25,6 +25,7 @@ tm_basic_headers = [
     , 'NotConstructibleStruct.hpp'
     , 'MoodycamelThreadedExecutor.hpp'
     , 'RealTimeSharedPoolExecutor.hpp'
+    , 'HwlocThreadCpuAllocator.hpp'
     , 'RealTimeMPSCQueue.hpp'
     , 'StructFieldInfoHelper.hpp'
     , 'StructFieldInfoHelper_Tuple.hpp'
