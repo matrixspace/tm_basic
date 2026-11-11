@@ -6,6 +6,7 @@ if build_machine.system() == 'linux'
     endif
     if have_hwloc_cpu_allocator
         subdir('hwloc_cpu_allocator_test')
+        subdir('cpu_cross_process_test')
     endif
     subdir('simple_graph_bench')
     subdir('chain_writer_loop_test')
