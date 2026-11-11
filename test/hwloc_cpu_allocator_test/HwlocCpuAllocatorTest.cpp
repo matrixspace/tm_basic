@@ -24,8 +24,9 @@ using namespace dev::cd606::tm;
 //  5. exhaustion throws CpuAutoBindError instead of returning a bad CPU
 //  6. release() makes a core reusable; configure() after first use throws
 //  7. concurrent acquire/release never hands out the same core twice
-//  8. graph nodes: Dedicated and Moodycamel nodes get exactly one CPU; a
-//     SharedPool node rejects CpuAutoBind with an error
+//  8. graph nodes: Dedicated and Moodycamel nodes get exactly one CPU;
+//     CpuAutoBindOnNuma(n) stays on node n; a SharedPool node rejects
+//     CpuAutoBind with an error
 // Run under stderr for diagnostics: the failure messages list the topology.
 
 #ifdef TM_KIT_BASIC_HAS_HWLOC_CPU_ALLOCATOR
@@ -332,10 +333,47 @@ namespace
         // nodes deliberately leaked: their threads are joined only on destruction
     }
 
+    void graphOnNumaTest()
+    {
+        std::ifstream node1("/sys/devices/system/node/node1/cpulist");
+        if (!node1) {
+            std::cout << "skip: single NUMA node\n";
+            return;
+        }
+        using M = infra::RealTimeApp<DedicatedEnv>;
+        using TP = Clock::time_point;
+        auto node = M::template liftPure<int>([](int &&x) { return x; }, infra::LiftParameters<TP>().SuggestThreaded(true));
+        std::string msg;
+        bool ok = false;
+        if (throws([&] { ok = M::configureThreadedNode(node, infra::ThreadedNodeOptions().CpuAutoBindOnNuma(1)); }, &msg)) {
+            check(false, "graph CpuAutoBindOnNuma(1) threw: " + msg);
+            return;
+        }
+        auto h = M::threadHandle(node);
+        auto aff = h ? affinityOf(*h) : std::vector<int>{};
+        std::set<int> n1;
+        std::string list;
+        std::getline(node1, list);
+        std::stringstream ss(list);
+        std::string part;
+        while (std::getline(ss, part, ',')) {
+            auto dash = part.find('-');
+            int lo = std::stoi(part.substr(0, dash));
+            int hi = dash == std::string::npos ? lo : std::stoi(part.substr(dash + 1));
+            for (int c = lo; c <= hi; ++c) {
+                n1.insert(c);
+            }
+        }
+        check(ok && aff.size() == 1 && n1.count(aff.front()), "graph CpuAutoBindOnNuma(1): node thread pinned to one CPU on NUMA node 1");
+        check(throws([&] { M::configureThreadedNode(node, infra::ThreadedNodeOptions().CpuAutoBindOnNuma(99)); }),
+            "graph CpuAutoBindOnNuma(99): unknown NUMA node throws");
+    }
+
     void graphTest()
     {
         graphAutoBind<DedicatedEnv>("dedicated");
         graphAutoBind<MoodyEnv>("moodycamel");
+        graphOnNumaTest();
         using M = infra::RealTimeApp<PoolEnv>;
         using TP = Clock::time_point;
         auto node = M::template liftPure<int>([](int &&x) { return x; }, infra::LiftParameters<TP>().SuggestThreaded(true));
