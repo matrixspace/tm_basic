@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -27,6 +28,9 @@ using namespace dev::cd606::tm;
 //  8. graph nodes: Dedicated and Moodycamel nodes get exactly one CPU;
 //     CpuAutoBindOnNuma(n) stays on node n; a SharedPool node rejects
 //     CpuAutoBind with an error
+//  9. ThreadCpuLease from user threads together with graph nodes: concurrent
+//     binds through the process allocator never share a physical core with
+//     each other or with an auto-bound node thread; leases are returned
 // Run under stderr for diagnostics: the failure messages list the topology.
 
 #ifdef TM_KIT_BASIC_HAS_HWLOC_CPU_ALLOCATOR
@@ -369,11 +373,76 @@ namespace
             "graph CpuAutoBindOnNuma(99): unknown NUMA node throws");
     }
 
+
+    void userThreadLeaseTest()
+    {
+        using M = infra::RealTimeApp<DedicatedEnv>;
+        using TP = Clock::time_point;
+        auto node = M::template liftPure<int>([](int &&x) { return x; }, infra::LiftParameters<TP>().SuggestThreaded(true));
+        std::string msg;
+        if (throws([&] { M::configureThreadedNode(node, infra::ThreadedNodeOptions().CpuAutoBind()); }, &msg)) {
+            check(false, "user lease: node bind threw: " + msg);
+            return;
+        }
+        auto nodeAff = affinityOf(*M::threadHandle(node));
+        std::set<std::set<int>> cores{coreSiblings(nodeAff.front())};
+        std::mutex m;
+        std::atomic<int> shared{0}, bound{0}, ready{0};
+        std::atomic<bool> go{false}, hold{true};
+        constexpr int kThreads = 8;
+        std::vector<std::thread> ts;
+        for (int i = 0; i < kThreads; ++i) {
+            ts.emplace_back([&, i] {
+                ++ready;
+                while (!go.load()) {
+                    std::this_thread::yield();
+                }
+                auto lease = infra::ThreadCpuLease::bindCurrentThread<DedicatedEnv>("user" + std::to_string(i));
+                auto aff = affinityOf(pthread_self());
+                {
+                    std::lock_guard<std::mutex> _(m);
+                    if (aff.size() != 1 || aff.front() != lease.cpu() || !cores.insert(coreSiblings(lease.cpu())).second) {
+                        ++shared;
+                    }
+                }
+                ++bound;
+                while (hold.load()) {
+                    std::this_thread::yield();
+                }
+            });
+        }
+        while (ready.load() < kThreads) {
+            std::this_thread::yield();
+        }
+        go = true;
+        while (bound.load() < kThreads) {
+            std::this_thread::yield();
+        }
+        hold = false;
+        for (auto &t : ts) {
+            t.join();
+        }
+        check(shared.load() == 0, "user lease: 8 concurrent user threads and a node thread all on distinct physical cores");
+        // All user leases returned: the same number of cores is free again.
+        std::vector<std::unique_ptr<infra::ThreadCpuLease>> again;
+        std::thread th([&] {
+            for (int i = 0; i < kThreads; ++i) {
+                std::thread inner([&] {
+                    again.push_back(std::make_unique<infra::ThreadCpuLease>(infra::ThreadCpuLease::bindCurrentThread<DedicatedEnv>("again")));
+                });
+                inner.join();
+            }
+        });
+        th.join();
+        check(again.size() == kThreads, "user lease: cores returned and reusable after the threads end");
+    }
+
     void graphTest()
     {
         graphAutoBind<DedicatedEnv>("dedicated");
         graphAutoBind<MoodyEnv>("moodycamel");
         graphOnNumaTest();
+        userThreadLeaseTest();
         using M = infra::RealTimeApp<PoolEnv>;
         using TP = Clock::time_point;
         auto node = M::template liftPure<int>([](int &&x) { return x; }, infra::LiftParameters<TP>().SuggestThreaded(true));
