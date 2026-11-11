@@ -42,6 +42,20 @@ if not have_moodycamel_executor
 endif
 message('Optional moodycamel executor: ' + have_moodycamel_executor.to_string())
 
+hwloc_option = get_option('hwloc_cpu_allocator')
+have_hwloc_cpu_allocator = false
+if not hwloc_option.disabled()
+  hwloc_dep = dependency('hwloc', required: hwloc_option.enabled())
+  have_hwloc_cpu_allocator = hwloc_dep.found()
+  if have_hwloc_cpu_allocator
+    common_deps += hwloc_dep
+  endif
+endif
+if not have_hwloc_cpu_allocator
+  add_project_arguments('-DTM_KIT_BASIC_DISABLE_HWLOC_CPU_ALLOCATOR=1', language: 'cpp')
+endif
+message('Optional hwloc CPU allocator: ' + have_hwloc_cpu_allocator.to_string())
+
 
 if build_machine.system() == 'windows'
   add_global_arguments('-DWINVER=0x0601', language: 'cpp')

@@ -12,3 +12,5 @@
 - 2026-11-09：[moodycamel执行器合并](../../tm_infra/doc/20261105-realtime-threaded-executor/moodycamel-unification.md)：只保留MoodycamelThreadedExecutor，以可用性探测控制相关目标编译。
 
 - 2026-11-11：[Threaded 节点独立配置 spinWait 与绑核](../../tm_infra/doc/20261111-threaded-node-spin-wait-affinity/README.md)：MoodycamelThreadedExecutor 支持节点级 spinWait 与绑核。
+
+- 2026-11-11：[节点线程自动绑核（CpuAutoBind）](../../tm_infra/doc/20261111-thread-cpu-autobind/README.md)：新增可选的 HwlocThreadCpuAllocator 与 meson 选项 hwloc_cpu_allocator。

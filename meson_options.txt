@@ -1,1 +1,2 @@
 option('moodycamel_executor', type: 'feature', value: 'auto', description: 'Build optional moodycamel executor tests and benchmarks when headers are available')
+option('hwloc_cpu_allocator', type: 'feature', value: 'auto', description: 'Build the optional hwloc based thread CPU allocator and its tests')
