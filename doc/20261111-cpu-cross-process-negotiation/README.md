@@ -127,3 +127,11 @@
 - tm_infra Release / Debug：4/4。
 - tm_basic Release / Debug：`hwloc_cpu_allocator_test`、`hwloc_cpu_allocator_constraints`、`cpu_cross_process_test` 3/3。
 - TSan（`-O1 -fsanitize=thread`）：两个测试程序 ALL PASSED，报告目录为空。
+
+## 评审修复（2026-11-11）
+评审报告见 [review.md](review.md)，4 项 P2 均已修复，细节和测试对应关系见其“修复记录”。要点：
+- 加锁过程中的异常也回滚已取得的锁（场景 14）。
+- 锁 fd 的 open/登记、取消登记/close 与 fork 通过 `forkMutex` + `pthread_atfork` 三个回调串行化（场景 15）。
+- 排除锁改为由 fork 子进程继承并保持，取代上文“一致性修正”第 3 条的 `acceptedExclusionHolders_` 方案；父进程退出后子进程的排除核仍受保护（场景 16）。
+- 已有锁文件不带 `O_CREAT` 打开，兼容 `fs.protected_regular`（场景 17）。
+- 踩坑：场景 16 初版是父进程先退出、子进程再绑核，子进程会自己补锁，旧代码下无法复现；改为子进程绑核并通过 pipe 通知后父进程才退出，旧代码下复现。

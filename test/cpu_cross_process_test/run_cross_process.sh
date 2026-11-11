@@ -217,6 +217,39 @@ else
     echo "skip: single NUMA node (scenario 13)"
 fi
 
+# ---- 14. review #1: an exception from a later core lock rolls back earlier ones
+Z=$("$BIN" hold 2 0 | awk '/^cpu /{print $2}' | tail -n1)
+out=$("$BIN" rollback "$X" "$Z" 2>&1); rc=$?
+check "reserve {$X,$Z} with a broken lock file for $Z throws and frees $X's lock" rc_and_grep "$rc" 0 FREE "$out"
+check "no core leaked after the failed reservation" [ "$(count_of)" -eq "$TOTAL" ]
+
+# ---- 15. review #2: fork racing with bind/reset leaves no lock in children --
+check "forkrace: 20 live children forked while another thread binds" start FR forkrace 20
+check "all cores free while the forked children are alive" [ "$(count_of)" -eq "$TOTAL" ]
+kill -9 "$PID_FR"; for k in $(awk '/^child /{print $2}' "$WORK/FR.out"); do kill -9 "$k" 2>/dev/null; done
+wait "$PID_FR" 2>/dev/null
+
+# ---- 16. review #3: a forked child keeps excludeCpus after its parent exits --
+"$BIN" forkexclorphan "$X" 30 > "$WORK/OR.out" 2>&1
+for ((i = 0; i < 300; i++)); do grep -q '^READY' "$WORK/OR.out" && break; sleep 0.02; done
+OPID=$(awk '/^pid /{print $2}' "$WORK/OR.out")
+PIDS+=("$OPID")
+check "orphaned child bound after its parent exited" grep -q '^childcpu ' "$WORK/OR.out"
+out=$("$BIN" explicit "$X" 0 2>&1); rc=$?
+check "another process still cannot take the child's excluded core $X" [ "$rc" -eq 3 ]
+[ -n "$OPID" ] && kill -9 "$OPID" 2>/dev/null
+sleep 0.1
+check "excluded core free after the child exits" [ "$(count_of)" -eq "$TOTAL" ]
+
+# ---- 17. review #4: existing lock files are opened without O_CREAT ----------
+if command -v strace > /dev/null; then
+    "$BIN" hold 1 0 > /dev/null 2>&1   # make sure lock files exist
+    strace -f -e trace=openat -o "$WORK/strace.out" "$BIN" hold 1 0 > /dev/null 2>&1
+    check "an existing lock file is opened without O_CREAT" bash -c "! grep 'core-.*\.lock' '$WORK/strace.out' | grep -v ENOENT | grep -q O_CREAT"
+else
+    echo "skip: strace unavailable (scenario 17)"
+fi
+
 # ---- 10. default (Local) scope is unchanged; mixing is rejected ------------
 check "local process L1" start L1 local 30
 check "local process L2" start L2 local 30

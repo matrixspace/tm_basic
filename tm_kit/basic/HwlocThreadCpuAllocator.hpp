@@ -277,18 +277,24 @@ namespace dev
                             publishExclusions();
                             // Exclusive across processes: every core touched must be
                             // lockable, otherwise roll back what this call took.
+                            // Every exit, including an exception from tryLockCore
+                            // (lock file unusable, fd exhaustion), rolls back.
                             std::vector<int> taken;
-                            for (int c : cpus) {
-                                int const key = lockKeyOf(c);
-                                std::string holder;
-                                if (!tryLockCore(key, who, holder)) {
-                                    for (int k : taken) {
-                                        unlockCore(k);
+                            try {
+                                for (int c : cpus) {
+                                    int const key = lockKeyOf(c);
+                                    std::string holder;
+                                    if (!tryLockCore(key, who, holder)) {
+                                        throw CpuAutoBindError("CpuAutoBind: CPU " + std::to_string(c) + " reserved by " + who
+                                            + " is on a physical core held by another process (" + holder + ", lock " + lockPath(key) + ")");
                                     }
-                                    throw CpuAutoBindError("CpuAutoBind: CPU " + std::to_string(c) + " reserved by " + who
-                                        + " is on a physical core held by another process (" + holder + ", lock " + lockPath(key) + ")");
+                                    taken.push_back(key);
                                 }
-                                taken.push_back(key);
+                            } catch (...) {
+                                for (int k : taken) {
+                                    unlockCore(k);
+                                }
+                                throw;
                             }
                         }
                         for (int c : cpus) {
@@ -795,12 +801,34 @@ namespace dev
                             }
                         }
                     }
+                    // Held from open() until the fd is in a slot, and from removing it
+                    // until close(); fork() takes it first (atfork prepare), so a child
+                    // never inherits a lease fd that its handler cannot see.
+                    static std::mutex &forkMutex()
+                    {
+                        static std::mutex *m = new std::mutex; // leaked: used at fork in any thread
+                        return *m;
+                    }
+                    static void forkPrepare()
+                    {
+                        forkMutex().lock();
+                    }
+                    static void forkParent()
+                    {
+                        forkMutex().unlock();
+                    }
+                    static void forkChild()
+                    {
+                        closeInheritedLocksInChild();
+                        forkMutex().unlock(); // the forking thread is the child's only thread
+                    }
                     static void installForkHandler()
                     {
                         static std::once_flag once;
                         std::call_once(once, [] {
                             lockSlots();
-                            if (::pthread_atfork(nullptr, nullptr, &closeInheritedLocksInChild) != 0) {
+                            forkMutex();
+                            if (::pthread_atfork(&forkPrepare, &forkParent, &forkChild) != 0) {
                                 throw CpuAutoBindError("CpuAutoBind: pthread_atfork failed");
                             }
                         });
@@ -827,6 +855,15 @@ namespace dev
                         }
                     }
 
+                    // No fork between removing the slot and close(): otherwise the
+                    // child would inherit an fd its handler no longer sees.
+                    static void closeLockFd(int fd) noexcept
+                    {
+                        std::lock_guard<std::mutex> forkGuard(forkMutex());
+                        removeSlot(fd);
+                        ::close(fd);
+                    }
+
                     void ensureLockDir()
                     {
                         auto const &dir = cfg_.crossProcessLockDir;
@@ -844,6 +881,33 @@ namespace dev
                         if (::lstat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
                             throw CpuAutoBindError("CpuAutoBind: lock directory " + dir + " is not a directory");
                         }
+                    }
+
+                    // Existing lock files are opened without O_CREAT: with
+                    // fs.protected_regular, O_CREAT on another user's file in a sticky
+                    // directory fails with EACCES even when the mode is 0666. Only a
+                    // missing file is created (O_EXCL), racing creators retry the open.
+                    static int openLockFile(std::string const &path)
+                    {
+                        for (int attempt = 0; attempt < 8; ++attempt) {
+                            int fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+                            if (fd >= 0) {
+                                return fd;
+                            }
+                            if (errno != ENOENT) {
+                                throw CpuAutoBindError("CpuAutoBind: cannot open lock file " + path + ": " + std::strerror(errno));
+                            }
+                            fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0666);
+                            if (fd >= 0) {
+                                ::fchmod(fd, 0666); // we own it: umask must not lock out other users
+                                return fd;
+                            }
+                            if (errno != EEXIST) {
+                                throw CpuAutoBindError("CpuAutoBind: cannot create lock file " + path + ": " + std::strerror(errno));
+                            }
+                            // another process created it in between: open the existing file
+                        }
+                        throw CpuAutoBindError("CpuAutoBind: cannot open lock file " + path + ": it keeps disappearing");
                     }
 
                     static std::string readHolder(int fd)
@@ -864,10 +928,15 @@ namespace dev
                     // Takes (or, if this process already holds it, re-counts) the lock
                     // of core key. Returns false, with holder describing the other
                     // process, when another process holds it. Caller holds mutex_.
-                    bool tryLockCore(int key, std::string const &who, std::string &holder)
+                    // inheritable (excludeCpus): the fd is kept out of the fork slots,
+                    // so a child forked without exec keeps the lock in force.
+                    bool tryLockCore(int key, std::string const &who, std::string &holder, bool inheritable = false)
                     {
                         auto it = heldLocks_.find(key);
 #ifdef __linux__
+                        if (it != heldLocks_.end() && it->second.inheritable && it->second.ownerPid != ::getpid()) {
+                            it->second.ownerPid = ::getpid(); // still open in this child
+                        }
                         if (it != heldLocks_.end() && it->second.ownerPid != ::getpid()) {
                             // Inherited from the parent across fork: the child's copy
                             // of the descriptor is closed, so this process holds nothing.
@@ -883,24 +952,26 @@ namespace dev
                         installForkHandler();
                         ensureLockDir();
                         std::string const path = lockPath(key);
-                        int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0666);
-                        if (fd < 0) {
-                            throw CpuAutoBindError("CpuAutoBind: cannot open lock file " + path + ": " + std::strerror(errno));
-                        }
-                        ::fchmod(fd, 0666); // umask must not lock out other users; fails harmlessly if not owner
-                        if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
-                            int const err = errno;
-                            if (err == EWOULDBLOCK) {
-                                holder = readHolder(fd);
+                        int fd = -1;
+                        {
+                            // No fork between open() and addSlot(): the child handler
+                            // must see every lock fd this process can hold.
+                            std::lock_guard<std::mutex> forkGuard(forkMutex());
+                            fd = openLockFile(path);
+                            if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+                                int const err = errno;
+                                if (err == EWOULDBLOCK) {
+                                    holder = readHolder(fd);
+                                    ::close(fd);
+                                    return false;
+                                }
                                 ::close(fd);
-                                return false;
+                                throw CpuAutoBindError("CpuAutoBind: flock on " + path + " failed: " + std::strerror(err));
                             }
-                            ::close(fd);
-                            throw CpuAutoBindError("CpuAutoBind: flock on " + path + " failed: " + std::strerror(err));
-                        }
-                        if (!addSlot(fd)) {
-                            ::close(fd);
-                            throw CpuAutoBindError("CpuAutoBind: too many cross-process core locks held");
+                            if (!inheritable && !addSlot(fd)) {
+                                ::close(fd);
+                                throw CpuAutoBindError("CpuAutoBind: too many cross-process core locks held");
+                            }
                         }
                         // Diagnostics only: the lock, not this text, is the occupancy.
                         std::string const text = "pid " + std::to_string(::getpid()) + " " + who + "\n";
@@ -908,11 +979,12 @@ namespace dev
                             ssize_t ignored = ::pwrite(fd, text.data(), text.size(), 0);
                             (void)ignored;
                         }
-                        heldLocks_[key] = CoreLock{fd, 1u, ::getpid()};
+                        heldLocks_[key] = CoreLock{fd, 1u, ::getpid(), inheritable};
                         return true;
 #else
                         (void)who;
                         (void)holder;
+                        (void)inheritable;
                         throw CpuAutoBindError("CpuAutoBind: cross-process negotiation is only supported on Linux");
 #endif
                     }
@@ -930,8 +1002,7 @@ namespace dev
                         // In a forked child the descriptor was already closed (and its
                         // number may be reused): only forget the entry there.
                         if (it->second.ownerPid == ::getpid()) {
-                            removeSlot(it->second.fd);
-                            ::close(it->second.fd); // releases the flock
+                            closeLockFd(it->second.fd); // releases the flock
                         }
 #endif
                         heldLocks_.erase(it);
@@ -968,64 +1039,52 @@ namespace dev
                     void publishExclusions()
                     {
 #ifdef __linux__
-                        // A child forked without exec has closed the inherited locks;
-                        // while the ancestor lives its excludeCpus locks still keep
-                        // every process away, so they are accepted in place of ours.
+                        // A child forked without exec inherits the excludeCpus lock
+                        // descriptors and keeps them open (they are not in the fork
+                        // slots): flock belongs to the open file description, so the
+                        // exclusion stays in force for the child's whole lifetime,
+                        // whether or not the parent exits. Adopt them as ours.
                         if (exclusionsPid_ != 0 && exclusionsPid_ != ::getpid()) {
-                            acceptedExclusionHolders_.insert(exclusionsPid_);
-                            exclusionsPublished_ = false;
-                            exclusionLocks_.clear();
-                            exclusionsPid_ = 0;
+                            for (int k : exclusionLocks_) {
+                                auto h = heldLocks_.find(k);
+                                if (h != heldLocks_.end()) {
+                                    h->second.ownerPid = ::getpid();
+                                }
+                            }
+                            exclusionsPid_ = ::getpid();
                         }
 #endif
                         if (exclusionsPublished_) {
                             return;
                         }
+                        // Every exit, including an exception from tryLockCore, rolls
+                        // back what this call took.
                         std::vector<int> taken;
-                        bool pending = false;
-                        for (auto const &core : cores_) {
-                            if (!core.userExcluded
-                                || std::find(exclusionLocks_.begin(), exclusionLocks_.end(), core.lockKey) != exclusionLocks_.end()) {
-                                continue;
-                            }
-                            std::string holder;
-                            if (tryLockCore(core.lockKey, "excludeCpus", holder)) {
+                        try {
+                            for (auto const &core : cores_) {
+                                if (!core.userExcluded
+                                    || std::find(exclusionLocks_.begin(), exclusionLocks_.end(), core.lockKey) != exclusionLocks_.end()) {
+                                    continue;
+                                }
+                                std::string holder;
+                                if (!tryLockCore(core.lockKey, "excludeCpus", holder, true)) {
+                                    throw CpuAutoBindError("CpuAutoBind: excludeCpus core of CPU " + std::to_string(core.lockKey)
+                                        + " cannot be published to other processes: it is already held by another process ("
+                                        + holder + ", lock " + lockPath(core.lockKey) + ")");
+                                }
                                 taken.push_back(core.lockKey);
-                                continue;
                             }
-                            if (heldByAcceptedAncestor(holder)) {
-                                pending = true; // retried on later calls, taken once the ancestor exits
-                                continue;
-                            }
+                        } catch (...) {
                             for (int k : taken) {
                                 unlockCore(k);
                             }
-                            throw CpuAutoBindError("CpuAutoBind: excludeCpus core of CPU " + std::to_string(core.lockKey)
-                                + " cannot be published to other processes: it is already held by another process ("
-                                + holder + ", lock " + lockPath(core.lockKey) + ")");
+                            throw;
                         }
                         exclusionLocks_.insert(exclusionLocks_.end(), taken.begin(), taken.end());
-                        exclusionsPublished_ = !pending;
+                        exclusionsPublished_ = true;
 #ifdef __linux__
                         exclusionsPid_ = ::getpid();
 #endif
-                    }
-
-                    // holder text is "last written by pid <n> excludeCpus".
-                    bool heldByAcceptedAncestor(std::string const &holder) const
-                    {
-                        if (acceptedExclusionHolders_.empty() || holder.find(" excludeCpus") == std::string::npos) {
-                            return false;
-                        }
-                        auto p = holder.find("pid ");
-                        if (p == std::string::npos) {
-                            return false;
-                        }
-                        try {
-                            return acceptedExclusionHolders_.count(std::stoi(holder.substr(p + 4))) > 0;
-                        } catch (...) {
-                            return false;
-                        }
                     }
 
                     // CrossProcess scope: snapshot of cores locked by other processes,
@@ -1080,8 +1139,7 @@ namespace dev
 #ifdef __linux__
                         for (auto &kv : heldLocks_) {
                             if (kv.second.ownerPid == ::getpid()) {
-                                removeSlot(kv.second.fd);
-                                ::close(kv.second.fd);
+                                closeLockFd(kv.second.fd);
                             }
                         }
 #endif
@@ -1113,11 +1171,11 @@ namespace dev
                     std::map<int, unsigned> reservedCpus_;    // CPU -> explicit reservations
                     std::map<int, std::string> reservedBy_;   // CPU -> first explicit holder
                     std::map<int, std::string> foreignBusy_;  // lock key -> "pid n", CrossProcess snapshot
-                    std::set<int> acceptedExclusionHolders_;  // ancestors whose excludeCpus locks cover ours
                     struct CoreLock {
                         int fd = -1;
                         unsigned refs = 0;
                         int ownerPid = 0; // process that opened fd (differs after fork)
+                        bool inheritable = false; // excludeCpus: kept open across fork
                     };
                     std::map<int, CoreLock> heldLocks_;        // lock key -> flock file
                     bool exclusionsPublished_ = false;         // excludeCpus cores locked (CrossProcess)

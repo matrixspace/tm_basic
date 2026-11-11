@@ -12,6 +12,8 @@
 #include <vector>
 #ifdef __linux__
 #include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -351,6 +353,120 @@ namespace
             say("READY");
             holdFor(arg(3));
             return 0;
+        }
+        if (mode == "rollback") {
+            // rollback <cpuA> <cpuB>: the lock file of B's core is made a
+            // directory, so reserving {A, B} throws from tryLockCore after A's
+            // core is locked. A's lock must be rolled back (printed as FREE).
+            configure();
+            auto &a = Cross::threadCpuAllocator();
+            std::string const dir = std::getenv("TM_CPU_LOCK_DIR");
+            int const keyB = coreKey(arg(3));
+            ::mkdir(dir.c_str(), 01777);
+            std::string const bad = dir + "/core-" + std::to_string(keyB) + ".lock";
+            ::unlink(bad.c_str()); // an earlier scenario may have created the regular file
+            if (::mkdir(bad.c_str(), 0755) != 0) {
+                std::cerr << "cannot create " << bad << '\n';
+                return 2;
+            }
+            bool threw = false;
+            try {
+                a.reserve({arg(2), arg(3)}, "rollback");
+            } catch (basic::CpuAutoBindError const &e) {
+                threw = true;
+                say(std::string("THREW ") + e.what());
+            }
+            ::rmdir(bad.c_str());
+            std::string const lockA = dir + "/core-" + std::to_string(coreKey(arg(2))) + ".lock";
+            int fd = ::open(lockA.c_str(), O_RDWR | O_CLOEXEC);
+            bool free = fd >= 0 && ::flock(fd, LOCK_EX | LOCK_NB) == 0;
+            if (fd >= 0) {
+                ::close(fd);
+            }
+            say(free ? "FREE" : "LEAKED");
+            return threw && free ? 0 : 1;
+        }
+        if (mode == "forkrace") {
+            // forkrace <forks>: one thread keeps binding/resetting while the
+            // main thread forks children that stay alive. Once the binder has
+            // stopped, this process holds nothing, so another process must get
+            // every core although the children are still alive.
+            configure();
+            std::atomic<bool> stop{false};
+            std::thread binder([&] {
+                while (!stop.load()) {
+                    try {
+                        auto l = Lease::bindCurrentThread<Cross>("binder");
+                    } catch (std::exception const &) {
+                    }
+                }
+            });
+            std::vector<pid_t> kids;
+            for (int i = 0; i < arg(2); ++i) {
+                pid_t c = ::fork();
+                if (c == 0) {
+                    ::sleep(30); // killed by the parent
+                    ::_exit(0);
+                }
+                kids.push_back(c);
+            }
+            stop = true;
+            binder.join();
+            // Every lease is gone in this process; children are alive.
+            for (pid_t k : kids) {
+                say("child " + std::to_string(k));
+            }
+            say("READY");
+            holdFor(30);
+            return 0;
+        }
+        if (mode == "forkexclorphan") {
+            // forkexclorphan <cpu> <seconds>: excludeCpus={cpu}; fork a child
+            // that binds and holds while the parent is still alive; only after
+            // the child has bound does the parent exit. The child never calls
+            // acquire again, so the excluded core must stay locked purely
+            // through the lock the child inherited.
+            configure({arg(2)});
+            Cross::threadCpuAllocator();
+            pid_t const parentPid = ::getpid();
+            int ready[2];
+            if (::pipe(ready) != 0) {
+                std::cerr << "pipe failed\n";
+                return 2;
+            }
+            pid_t child = ::fork();
+            if (child == 0) {
+                ::close(ready[0]);
+                ::setsid();
+                std::thread([&] {
+                    try {
+                        auto c = Lease::bindCurrentThread<Cross>("orphan");
+                        say("childcpu " + std::to_string(c.cpu()));
+                        say("pid " + std::to_string(::getpid()));
+                        std::cout.flush();
+                        char ok = 'R';
+                        (void)!::write(ready[1], &ok, 1);
+                        ::close(ready[1]);
+                        // wait until the parent is gone before reporting READY
+                        while (::getppid() == parentPid) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        }
+                        say("READY");
+                        holdFor(arg(3));
+                    } catch (std::exception const &e) {
+                        say(std::string("CHILDERR ") + e.what());
+                        ::close(ready[1]);
+                    }
+                }).join();
+                std::cout.flush();
+                ::_exit(0);
+            }
+            ::close(ready[1]);
+            char ok = 0;
+            ssize_t n = ::read(ready[0], &ok, 1);
+            ::close(ready[0]);
+            // parent exits only after the child has bound
+            return (n == 1 && ok == 'R') ? 0 : 3;
         }
         if (mode == "fillnuma") {
             // fillnuma <node> <leave> <seconds>: take every free core of NUMA
