@@ -169,6 +169,31 @@ namespace
         Cfg bad;
         bad.excludeCpus = {-1};
         check(throws([&] { Alloc a{bad}; a.allowedList(); }, &msg), "invalid excluded CPU throws");
+
+        // Explicit reservations must honour excludeCpus too (whole core).
+        msg.clear();
+        check(throws([&] { alloc.reserve({excludedCpu}, "explicit-excluded"); }, &msg) && msg.find("excludeCpus") != std::string::npos,
+            "reserve() of an excluded CPU throws (Local scope)");
+        for (int sib : excludedCore) {
+            if (sib != excludedCpu) {
+                check(throws([&] { alloc.reserve({sib}, "explicit-sibling"); }), "reserve() of an SMT sibling of an excluded CPU throws");
+                break;
+            }
+        }
+        // A failed reservation leaves nothing behind: a valid one still works.
+        int other = usable[2].front();
+        check(!throws([&] { alloc.reserve({other}, "explicit-ok"); }), "reserve() of a non-excluded CPU still succeeds");
+        alloc.release({other});
+        check(throws([&] { alloc.reserve({other, excludedCpu}, "mixed"); }), "a list containing an excluded CPU is rejected as a whole");
+        check(!throws([&] { alloc.reserve({other}, "explicit-again"); }), "the rejected list reserved nothing");
+        alloc.release({other});
+        // Same rule through the lease API.
+        msg.clear();
+        bool leaseThrew = false;
+        std::thread([&] {
+            leaseThrew = throws([&] { infra::ThreadCpuLease::bindCurrentThreadTo(alloc, {excludedCpu}, "lease-excluded"); }, &msg);
+        }).join();
+        check(leaseThrew, "ThreadCpuLease::bindCurrentThreadTo on an excluded CPU throws");
     }
 
     void numaTest()
@@ -228,6 +253,80 @@ namespace
         int assigned = got.front();
         check(throws([&] { alloc.reserve({assigned}, "conflicting"); }, &msg) && msg.find("already automatically assigned") != std::string::npos,
             "reserving an automatically assigned CPU throws");
+    }
+
+    // Explicit reservations are exclusive per physical core inside one process,
+    // in both scopes (same rule as across processes). reserveReplacing() lets
+    // the holder of `previous` move onto its own core again.
+    void explicitExclusiveTest(basic::CpuAllocatorScope scope, std::string const &tag)
+    {
+        Alloc probe{Cfg{}};
+        auto usable = probe.usableCores();
+        if (usable.size() < 3) {
+            std::cout << "skip: not enough cores\n";
+            return;
+        }
+        Cfg cfg;
+        char dirTemplate[] = "/dev/shm/tm_cpu_unit.XXXXXX";
+        std::string dir;
+        if (scope == basic::CpuAllocatorScope::CrossProcess) {
+            char *d = ::mkdtemp(dirTemplate);
+            check(d != nullptr, tag + ": private lock directory created");
+            if (!d) {
+                return;
+            }
+            dir = d;
+            cfg.crossProcessLockDir = dir + "/locks";
+        }
+        {
+            Alloc alloc{cfg, scope};
+            int const a = usable[0].front();
+            int const b = usable[1].front();
+            std::string msg;
+            check(!throws([&] { alloc.reserve({a}, "first"); }), tag + ": first explicit reservation succeeds");
+            check(throws([&] { alloc.reserve({a}, "second"); }, &msg) && msg.find("already explicitly reserved by first") != std::string::npos,
+                tag + ": second explicit reservation of the same CPU throws and names the holder");
+            for (int sib : usable[0]) {
+                if (sib != a) {
+                    check(throws([&] { alloc.reserve({sib}, "sibling"); }), tag + ": explicit reservation of an SMT sibling throws");
+                    break;
+                }
+            }
+            check(throws([&] { alloc.reserve({b, a}, "mixed"); }), tag + ": a list touching a reserved core is rejected");
+            check(!throws([&] { alloc.reserve({b}, "b-only"); }), tag + ": the rejected list reserved nothing");
+            alloc.release({b});
+            // The holder of `a` may move onto its own core again.
+            check(!throws([&] { alloc.reserveReplacing({a}, {a}, "first"); }), tag + ": reserveReplacing onto the caller's own core succeeds");
+            alloc.release({a});
+            check(throws([&] { alloc.reserve({a}, "third"); }), tag + ": the original reservation still holds after the replacement released once");
+            alloc.release({a});
+            check(!throws([&] { alloc.reserve({a}, "fourth"); }), tag + ": core free after both releases");
+            alloc.release({a});
+            // Two threads binding explicitly to the same CPU: exactly one wins.
+            std::atomic<int> wins{0}, losses{0};
+            std::vector<std::thread> ts;
+            std::vector<infra::ThreadCpuLease> leases(8);
+            for (int i = 0; i < 8; ++i) {
+                ts.emplace_back([&, i] {
+                    try {
+                        leases[i] = infra::ThreadCpuLease::bindCurrentThreadTo(alloc, {b}, "racer" + std::to_string(i));
+                        ++wins;
+                    } catch (std::exception const &) {
+                        ++losses;
+                    }
+                });
+            }
+            for (auto &t : ts) {
+                t.join();
+            }
+            check(wins.load() == 1 && losses.load() == 7, tag + ": 8 threads racing for one CPU: exactly one explicit lease wins");
+            leases.clear();
+            check(!throws([&] { alloc.reserve({b}, "after-race"); }), tag + ": the winner's lease released the core");
+            alloc.release({b});
+        }
+        if (!dir.empty()) {
+            std::system(("rm -rf '" + dir + "'").c_str());
+        }
     }
 
     void configureOnceTest()
@@ -474,6 +573,33 @@ namespace
             "graph sharedpool: CpuAutoBind rejected with an error");
         std::cout << "      sharedpool message: " << msg << '\n';
     }
+    // Graph nodes through the process allocator (Local scope): reconfiguring a
+    // node onto its own CPUs is allowed, a second node on the same core is not.
+    void graphExplicitExclusiveTest()
+    {
+        using M = infra::RealTimeApp<DedicatedEnv>;
+        using TP = Clock::time_point;
+        auto usable = Alloc::instance().usableCores();
+        if (usable.size() < 3) {
+            std::cout << "skip: not enough cores\n";
+            return;
+        }
+        int const cpu = usable.back().front();
+        auto n1 = M::template liftPure<int>([](int &&x) { return x; }, infra::LiftParameters<TP>().SuggestThreaded(true));
+        auto n2 = M::template liftPure<int>([](int &&x) { return x; }, infra::LiftParameters<TP>().SuggestThreaded(true));
+        bool ok = false;
+        check(!throws([&] { ok = M::configureThreadedNode(n1, infra::ThreadedNodeOptions().Cpus({cpu})); }) && ok, "graph: node 1 Cpus({cpu}) succeeds");
+        ok = false;
+        check(!throws([&] { ok = M::configureThreadedNode(n1, infra::ThreadedNodeOptions().Cpus({cpu})); }) && ok, "graph: node 1 reconfigured onto the same CPU succeeds");
+        std::string msg;
+        check(throws([&] { M::configureThreadedNode(n2, infra::ThreadedNodeOptions().Cpus({cpu})); }, &msg), "graph: node 2 Cpus() on node 1's CPU throws");
+        int const other = usable[usable.size() - 2].front();
+        ok = false;
+        check(!throws([&] { ok = M::configureThreadedNode(n1, infra::ThreadedNodeOptions().Cpus({other})); }) && ok, "graph: node 1 moves to another CPU");
+        ok = false;
+        check(!throws([&] { ok = M::configureThreadedNode(n2, infra::ThreadedNodeOptions().Cpus({cpu})); }) && ok, "graph: node 2 can take the CPU node 1 left");
+    }
+
 } // namespace
 
 int main()
@@ -485,9 +611,12 @@ int main()
     excludeTest();
     numaTest();
     reserveTest();
+    explicitExclusiveTest(basic::CpuAllocatorScope::Local, "local");
+    explicitExclusiveTest(basic::CpuAllocatorScope::CrossProcess, "cross");
     configureOnceTest();
     concurrentTest();
     graphTest();
+    graphExplicitExclusiveTest();
     std::cout << (failures ? "FAILED" : "ALL PASSED") << '\n';
     return failures ? 1 : 0;
 }
