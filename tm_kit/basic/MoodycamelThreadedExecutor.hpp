@@ -120,7 +120,7 @@ namespace dev
                     };
                 } // namespace moodycamel_threaded_executor_detail
 
-                //Optional executor: one dedicated (detached) thread per node.
+                //Optional executor: one dedicated thread per node, joined in its destructor.
                 //Blocking: the producer only takes the mutex / notifies when the consumer
                 //has announced it is about to sleep (eventcount style), so the hot path
                 //avoids per-item notification while the consumer is active; block
@@ -133,6 +133,7 @@ namespace dev
                 private:
                     using State = moodycamel_threaded_executor_detail::DedicatedThreadState<Item>;
                     std::shared_ptr<State> s_;
+                    std::thread thread_;           // joined in destructor after stop()
                     std::optional<std::thread::native_handle_type> handle_;
                     std::mutex configMutex_;     // guards handle_ publication and pendingCpus_
                     std::vector<int> pendingCpus_;
@@ -248,6 +249,15 @@ namespace dev
                     ~MoodycamelThreadedExecutor()
                     {
                         stop();
+                        if (thread_.joinable()) {
+                            // Destroyed from its own callback: the thread cannot join
+                            // itself; it exits on its own after the callback returns.
+                            if (thread_.get_id() == std::this_thread::get_id()) {
+                                thread_.detach();
+                            } else {
+                                thread_.join();
+                            }
+                        }
                     }
                     template <class Host>
                     void start(Host *h)
@@ -259,8 +269,7 @@ namespace dev
                             handle_ = th.native_handle();
                             infra::realtime_threaded_executor_detail::setThreadAffinity(*handle_, pendingCpus_);
                         }
-                        //same lifecycle as the old handler bases: the thread is detached
-                        th.detach();
+                        thread_ = std::move(th);
                     }
                     bool push(Item &&x)
                     {
