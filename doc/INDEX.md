@@ -10,3 +10,5 @@
 - 2026-11-09：[Enhanced取消全局FIFO后的优化](../../tm_infra/doc/20261105-realtime-threaded-executor/unordered-enhanced.md)：采用moodycamel分块队列与分片发布计数，以单生产者部分延迟代价换取多生产者吞吐。
 
 - 2026-11-09：[moodycamel执行器合并](../../tm_infra/doc/20261105-realtime-threaded-executor/moodycamel-unification.md)：只保留MoodycamelThreadedExecutor，以可用性探测控制相关目标编译。
+
+- 2026-11-11：[Threaded 节点独立配置 spinWait 与绑核](../../tm_infra/doc/20261111-threaded-node-spin-wait-affinity/README.md)：MoodycamelThreadedExecutor 支持节点级 spinWait 与绑核。

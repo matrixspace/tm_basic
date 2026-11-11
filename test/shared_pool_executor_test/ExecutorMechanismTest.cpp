@@ -410,6 +410,15 @@ namespace
         check(host.queries == 0 && host.idle == 0, "stop during start prevents late idle registration");
     }
 
+    void nodeOptionsIgnoredTest()
+    {
+        // SharedPool spin/affinity are pool-wide: node options are ignored, no error.
+        basic::RealTimeSharedPoolExecutor<int> exec;
+        bool r = infra::realtime_threaded_executor_detail::configure(exec, infra::ThreadedNodeOptions().Cpus({0}).SpinWait(std::chrono::microseconds(1)), 0);
+        infra::InlineExecutor<int> inl;
+        bool ri = infra::realtime_threaded_executor_detail::configure(inl, infra::ThreadedNodeOptions().Cpus({0}), 0);
+        check(!r && !ri, "shared pool and inline ignore node options without error");
+    }
 } // namespace
 int main()
 {
@@ -424,6 +433,7 @@ int main()
     poolIdleActivationTest();
     poolIdleMembershipTest();
     poolStopDuringStartTest();
+    nodeOptionsIgnoredTest();
     std::cout << (failures ? "FAILED" : "ALL PASSED") << std::endl;
     return failures ? 1 : 0;
 }
