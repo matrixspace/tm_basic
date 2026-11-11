@@ -13,6 +13,8 @@
 
 #ifdef TM_KIT_BASIC_HAS_MOODYCAMEL_THREADED_EXECUTOR
 #include <array>
+#include <cstdint>
+#include <vector>
 namespace dev
 {
     namespace cd606
@@ -98,11 +100,15 @@ namespace dev
                         alignas(64) std::atomic<bool> sleeping{false};
                         std::atomic<bool> wakeRequested{false};
                         std::atomic<std::size_t> pending{0};
+                        // Per-node override of opts.spinWait (configure); read by the
+                        // consumer before each wait, so a change applies from the next wait.
+                        std::atomic<std::int64_t> spinWaitNs;
                         std::mutex mutex;
                         std::condition_variable cond;
 
                         explicit DedicatedThreadState(ThreadedExecOptions const &o)
                             : opts(o)
+                            , spinWaitNs(static_cast<std::int64_t>(o.spinWait.count()))
                         {
                         }
 
@@ -128,6 +134,8 @@ namespace dev
                     using State = moodycamel_threaded_executor_detail::DedicatedThreadState<Item>;
                     std::shared_ptr<State> s_;
                     std::optional<std::thread::native_handle_type> handle_;
+                    std::mutex configMutex_;     // guards handle_ publication and pendingCpus_
+                    std::vector<int> pendingCpus_;
 
                     static void wakeIfSleeping(State *s)
                     {
@@ -165,7 +173,7 @@ namespace dev
                         auto ready = [s]() { return s->queue.maybeNonEmpty() || !s->running.load(std::memory_order_acquire) || s->wakeRequested.load(std::memory_order_acquire); };
                         bool const hasIdle = h->executorHasIdleWork();
                         auto const idleDeadline = hasIdle ? std::chrono::steady_clock::now() + Config::idlePeriod : std::chrono::steady_clock::time_point::max();
-                        auto budget = s->opts.spinWait;
+                        auto budget = std::chrono::nanoseconds(s->spinWaitNs.load(std::memory_order_relaxed));
                         if (hasIdle) {
                             budget = std::min(budget, std::chrono::duration_cast<std::chrono::nanoseconds>(Config::idlePeriod));
                         }
@@ -246,7 +254,11 @@ namespace dev
                     {
                         s_->running.store(true, std::memory_order_release);
                         std::thread th(&MoodycamelThreadedExecutor::run<Host>, s_, h);
-                        handle_ = th.native_handle();
+                        {
+                            std::lock_guard<std::mutex> lock(configMutex_);
+                            handle_ = th.native_handle();
+                            infra::realtime_threaded_executor_detail::setThreadAffinity(*handle_, pendingCpus_);
+                        }
                         //same lifecycle as the old handler bases: the thread is detached
                         th.detach();
                     }
@@ -279,6 +291,29 @@ namespace dev
                     {
                         s_->wakeRequested.store(true, std::memory_order_release);
                         s_->notifyLocked();
+                    }
+                    // Before the graph starts (possibly after start()). spinWait takes
+                    // effect from the consumer's next wait; the CPU set is applied
+                    // immediately when the thread runs, otherwise at start().
+                    bool configure(infra::ThreadedNodeOptions const &o)
+                    {
+                        // Reject the whole call before changing anything.
+                        if (!infra::realtime_threaded_executor_detail::validCpus(o.cpus)) {
+                            return false;
+                        }
+                        if (o.spinWait) {
+                            auto ns = std::max(o.spinWait->count(), static_cast<std::chrono::nanoseconds::rep>(0));
+                            s_->spinWaitNs.store(static_cast<std::int64_t>(ns), std::memory_order_relaxed);
+                        }
+                        std::lock_guard<std::mutex> lock(configMutex_);
+                        if (o.cpus.empty()) {
+                            return true; // keep the current / pending affinity
+                        }
+                        pendingCpus_ = o.cpus;
+                        if (handle_ && s_->running.load(std::memory_order_acquire)) {
+                            return infra::realtime_threaded_executor_detail::setThreadAffinity(*handle_, pendingCpus_);
+                        }
+                        return true;
                     }
                     std::optional<std::thread::native_handle_type> threadHandle()
                     {

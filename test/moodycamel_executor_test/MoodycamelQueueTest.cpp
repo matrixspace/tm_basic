@@ -2,6 +2,12 @@
 #include <array>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#include <time.h>
+#endif
 using namespace dev::cd606::tm;
 namespace
 {
@@ -288,6 +294,73 @@ namespace
             check(!exec->push({0, 20000}), "stop remains effective after wake stress");
         }
     }
+#ifdef __linux__
+    std::vector<int> affinityOf(std::thread::native_handle_type h)
+    {
+        std::vector<int> r;
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        if (pthread_getaffinity_np(h, sizeof(set), &set) == 0) {
+            for (int c = 0; c < CPU_SETSIZE; ++c) {
+                if (CPU_ISSET(c, &set)) {
+                    r.push_back(c);
+                }
+            }
+        }
+        return r;
+    }
+    // CPU time the consumer burns after one item: approximately the spin budget.
+    double consumerCpuMsAfterOnePush(Exec *exec, Host *host, unsigned seq)
+    {
+        clockid_t cid;
+        if (pthread_getcpuclockid(*exec->threadHandle(), &cid) != 0) {
+            return -1;
+        }
+        timespec a{}, b{};
+        clock_gettime(cid, &a);
+        exec->push({0, seq});
+        wait([&] { return host->count.load(std::memory_order_acquire) == seq + 1; });
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        clock_gettime(cid, &b);
+        return (b.tv_sec - a.tv_sec) * 1e3 + (b.tv_nsec - a.tv_nsec) / 1e6;
+    }
+    void nodeOptionsTest()
+    {
+        auto allowed = affinityOf(pthread_self());
+        if (allowed.empty()) {
+            check(false, "process affinity readable");
+            return;
+        }
+        int const first = allowed.front(), last = allowed.back();
+        auto *exec = new Exec;
+        auto *host = new Host{exec};
+        host->ready = true;
+        // Before start: stored and applied when the thread is created.
+        bool before = exec->configure(infra::ThreadedNodeOptions().Cpus({first}).SpinWait(std::chrono::nanoseconds::zero()));
+        exec->start(host);
+        auto now = affinityOf(*exec->threadHandle());
+        check(before && now.size() == 1 && now[0] == first, "moodycamel: affinity set before start applied at start");
+        double noSpin = consumerCpuMsAfterOnePush(exec, host, 0);
+        // After start (node already constructed, graph not yet running).
+        bool after = exec->configure(infra::ThreadedNodeOptions().Cpus({last}).SpinWait(std::chrono::milliseconds(30)));
+        now = affinityOf(*exec->threadHandle());
+        check(after && now.size() == 1 && now[0] == last, "moodycamel: affinity changed after start");
+        double spin = consumerCpuMsAfterOnePush(exec, host, 1);
+        std::cout << "      consumer CPU ms after one push: spinWait=0 " << noSpin << ", spinWait=30ms " << spin << '\n';
+        check(noSpin >= 0 && noSpin < 5, "moodycamel: spinWait=0 does not spin");
+        check(spin >= 15, "moodycamel: per-node spinWait takes effect");
+        // Rejected options change nothing.
+        bool bad = exec->configure(infra::ThreadedNodeOptions().Cpus({-1}).SpinWait(std::chrono::nanoseconds::zero()));
+        now = affinityOf(*exec->threadHandle());
+        double stillSpin = consumerCpuMsAfterOnePush(exec, host, 2);
+        check(!bad && now.size() == 1 && now[0] == last && stillSpin >= 15, "moodycamel: invalid CPU rejected, affinity and spinWait kept");
+        // Empty options keep both settings.
+        bool keep = exec->configure(infra::ThreadedNodeOptions());
+        now = affinityOf(*exec->threadHandle());
+        check(keep && now.size() == 1 && now[0] == last, "moodycamel: empty options keep affinity");
+        exec->stop();
+    }
+#endif
 } // namespace
 int main()
 {
@@ -297,5 +370,8 @@ int main()
     executorTest();
     sleepingPublicationTest();
     wakeRaceTest();
+#ifdef __linux__
+    nodeOptionsTest();
+#endif
     return failures ? 1 : 0;
 }
