@@ -3,7 +3,7 @@
 **任务开始时间：** 2026-11-11  
 **任务结束时间：** 2026-11-11  
 **状态：** 完成（未合并 develop，未推送）  
-**分支：** `feature/cpu-cross-process-negotiation`（tm_basic 与 tm_infra 均有代码改动），worktree `worktrees/cpu-cross-process-negotiation/`
+**分支：** `feature/cpu-cross-process-negotiation`（tm_basic commit `435c38f`，tm_infra commit `b116d9a`），worktree `worktrees/cpu-cross-process-negotiation/`
 
 ## 背景
 [CpuAutoBind](../../../tm_infra/doc/20261111-thread-cpu-autobind/README.md) 的 `HwlocThreadCpuAllocator` 只在单个进程内防止忙线程抢同一物理核。同一台机器上多个基于 tm_kit 的进程各自自动绑核时，候选顺序相同，busyloop 线程会落到同一个 CPU 上，性能严重下降。

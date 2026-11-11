@@ -16,3 +16,5 @@
 - 2026-11-11：[节点线程自动绑核（CpuAutoBind）](../../tm_infra/doc/20261111-thread-cpu-autobind/README.md)：新增可选的 HwlocThreadCpuAllocator 与 meson 选项 hwloc_cpu_allocator。
 
 - 2026-11-11：[多进程 CPU 自协商（CpuAutoBind 跨进程）](20261111-cpu-cross-process-negotiation/README.md)：新增 `HwlocCrossProcessCpuAllocatorComponent`，每个物理核一个 flock 锁文件，进程或线程退出即释放；excludeCpus 跨进程生效，显式绑定进程内外一律独占。
+
+- 2026-11-11：[多进程 CPU 自协商（CpuAutoBind 跨进程）](20261111-cpu-cross-process-negotiation/README.md)：新增 `HwlocCrossProcessCpuAllocatorComponent`，每个物理核一个 flock 锁文件，线程/进程退出自动释放；excludeCpus 跨进程生效，显式绑定进程内外独占。
