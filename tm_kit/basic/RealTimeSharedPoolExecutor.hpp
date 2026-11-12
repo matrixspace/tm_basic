@@ -59,6 +59,7 @@
 
 namespace dev { namespace cd606 { namespace tm { namespace basic {
     using infra::ThreadedExecOptions;
+    using infra::parseCpuList;
 
     struct SharedThreadPoolConfig {
         //0 means std::thread::hardware_concurrency() (at least 1)
@@ -71,6 +72,38 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
         unsigned maxBatch = 64;
         // Active wait after a slice; empty idle ticks must not renew it.
         std::chrono::nanoseconds spinWait = std::chrono::microseconds(200);
+
+        // Parses a CPU list string (parseCpuList format: "2", "2,3", "2-5",
+        // "cpus:2-5") and sets the cpus field. "none" or "" clears the field.
+        // Returns *this for chaining. Throws std::invalid_argument on bad input.
+        SharedThreadPoolConfig &cpusFromString(std::string const &s)
+        {
+            // strip whitespace and handle none/empty
+            std::size_t b = 0, e = s.size();
+            while (b < e && (s[b] == ' ' || s[b] == '\t')) { ++b; }
+            while (e > b && (s[e-1] == ' ' || s[e-1] == '\t')) { --e; }
+            auto const str = s.substr(b, e - b);
+            if (str.empty()) {
+                cpus.clear();
+                return *this;
+            }
+            // case-fold for none check
+            std::string lower = str;
+            for (auto &c : lower) {
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c | 0x20);
+            }
+            if (lower == "none") {
+                cpus.clear();
+                return *this;
+            }
+            // "cpus:<list>" prefix is accepted for consistency with CpuBindingSpec
+            std::string listStr = str;
+            if (lower.substr(0, 5) == "cpus:") {
+                listStr = str.substr(5);
+            }
+            cpus = infra::parseCpuList(listStr);
+            return *this;
+        }
     };
 
     namespace realtime_shared_pool_detail {
