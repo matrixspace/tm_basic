@@ -43,6 +43,7 @@ namespace dev
                 using infra::CpuAutoBindRequest;
                 using infra::IThreadCpuAllocator;
                 using infra::ThreadCpuAllocatorComponent;
+                using infra::parseCpuList;
 
                 // Thrown when no CPU can be handed out (bad configuration, no free
                 // core, wrong NUMA request, incompatible process constraints).
@@ -60,6 +61,17 @@ namespace dev
                     AllowPartialCore
                 };
 
+                // Local: cores are shared out among the threads of this process
+                // only (default). CrossProcess: every core is also locked with a
+                // per-core flock file, so tm_kit processes on the same machine never
+                // pick the same core; a lock vanishes when its process exits.
+                // Declared here (before HwlocCpuAllocatorConfig) so that
+                // HwlocCpuAllocatorConfig::fromString can use it as a parameter.
+                enum class CpuAllocatorScope {
+                    Local,
+                    CrossProcess
+                };
+
                 struct HwlocCpuAllocatorConfig {
                     // OS CPU indices that must never be handed out. The whole physical
                     // core containing each one is avoided, so an SMT sibling of a CPU
@@ -74,16 +86,113 @@ namespace dev
                     // physical core. Every process meant to negotiate must use the
                     // same directory (tmpfs; network filesystems are not supported).
                     std::string crossProcessLockDir = "/dev/shm/tm_kit_cpu_locks";
+
+                    // Parses a semicolon-separated option string into a config and an
+                    // optional scope override. Supported keys (case-insensitive):
+                    //   exclude=<cpulist>    -- parseCpuList format; replaces excludeCpus
+                    //   avoid_first=<bool>   -- "0"/"false"/"no" to disable, else true
+                    //   smt=<policy>         -- "partial" or "require_full" (default)
+                    //   scope=<s>            -- "local" or "cross"; sets *scopeOut when non-null
+                    //   lockdir=<path>       -- crossProcessLockDir
+                    // Unknown keys throw std::invalid_argument.
+                    static HwlocCpuAllocatorConfig fromString(
+                        std::string const &s,
+                        CpuAllocatorScope *scopeOut = nullptr)
+                    {
+                        HwlocCpuAllocatorConfig cfg;
+                        std::size_t pos = 0;
+                        while (pos <= s.size()) {
+                            auto end = s.find(';', pos);
+                            if (end == std::string::npos) { end = s.size(); }
+                            // trim token
+                            auto b = pos, e = end;
+                            while (b < e && (s[b] == ' ' || s[b] == '\t')) { ++b; }
+                            while (e > b && (s[e-1] == ' ' || s[e-1] == '\t')) { --e; }
+                            if (b < e) {
+                                auto const tok = s.substr(b, e - b);
+                                auto eq = tok.find('=');
+                                if (eq == std::string::npos) {
+                                    throw std::invalid_argument(
+                                        "HwlocCpuAllocatorConfig::fromString: missing '=' in token \""
+                                        + tok + "\"");
+                                }
+                                auto key = tok.substr(0, eq);
+                                auto val = tok.substr(eq + 1);
+                                // trim whitespace from key and value
+                                {
+                                    std::size_t kb = 0, ke = key.size();
+                                    while (kb < ke && (key[kb]==' '||key[kb]=='\t')) ++kb;
+                                    while (ke > kb && (key[ke-1]==' '||key[ke-1]=='\t')) --ke;
+                                    key = key.substr(kb, ke-kb);
+                                    std::size_t vb = 0, ve = val.size();
+                                    while (vb < ve && (val[vb]==' '||val[vb]=='\t')) ++vb;
+                                    while (ve > vb && (val[ve-1]==' '||val[ve-1]=='\t')) --ve;
+                                    val = val.substr(vb, ve-vb);
+                                }
+                                // case-fold key
+                                for (auto &c : key) {
+                                    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c | 0x20);
+                                }
+                                if (key == "exclude") {
+                                    cfg.excludeCpus = infra::parseCpuList(val);
+                                } else if (key == "avoid_first") {
+                                    std::string lv = val;
+                                    for (auto &c : lv) {
+                                        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c | 0x20);
+                                    }
+                                    cfg.avoidFirstCoreOfNumaNode =
+                                        !(lv == "0" || lv == "false" || lv == "no");
+                                } else if (key == "smt") {
+                                    std::string lv = val;
+                                    for (auto &c : lv) {
+                                        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c | 0x20);
+                                    }
+                                    if (lv == "partial" || lv == "allowpartial" || lv == "allow_partial") {
+                                        cfg.smt = SmtPolicy::AllowPartialCore;
+                                    } else if (lv == "require_full" || lv == "requirefull" || lv == "full") {
+                                        cfg.smt = SmtPolicy::RequireFullCore;
+                                    } else {
+                                        throw std::invalid_argument(
+                                            "HwlocCpuAllocatorConfig::fromString: unknown smt value \""
+                                            + val + "\"; expected partial or require_full");
+                                    }
+                                } else if (key == "scope") {
+                                    if (scopeOut != nullptr) {
+                                        std::string lv = val;
+                                        for (auto &c : lv) {
+                                            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c | 0x20);
+                                        }
+                                        if (lv == "local") {
+                                            *scopeOut = CpuAllocatorScope::Local;
+                                        } else if (lv == "cross" || lv == "crossprocess" || lv == "cross_process") {
+                                            *scopeOut = CpuAllocatorScope::CrossProcess;
+                                        } else {
+                                            throw std::invalid_argument(
+                                                "HwlocCpuAllocatorConfig::fromString: unknown scope value \""
+                                                + val + "\"; expected local or cross");
+                                        }
+                                    }
+                                } else if (key == "lockdir") {
+                                    cfg.crossProcessLockDir = val;
+                                } else {
+                                    throw std::invalid_argument(
+                                        "HwlocCpuAllocatorConfig::fromString: unknown key \""
+                                        + key + "\"");
+                                }
+                            }
+                            if (end == s.size()) { break; }
+                            pos = end + 1;
+                        }
+                        return cfg;
+                    }
                 };
 
                 // Local: cores are shared out among the threads of this process
                 // only (default). CrossProcess: every core is also locked with a
                 // per-core flock file, so tm_kit processes on the same machine never
                 // pick the same core; a lock vanishes when its process exits.
-                enum class CpuAllocatorScope {
-                    Local,
-                    CrossProcess
-                };
+                // Note: declared earlier in this file (before HwlocCpuAllocatorConfig)
+                // so that HwlocCpuAllocatorConfig::fromString can reference it.
 
                 // Process-wide allocator for CpuAutoBind. Must be configured before
                 // the first acquire(); later configure() calls throw std::logic_error

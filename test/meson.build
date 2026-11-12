@@ -14,3 +14,4 @@ if build_machine.system() == 'linux'
 endif
 
 subdir('shared_pool_executor_test')
+subdir('cpu_bind_string_test')
