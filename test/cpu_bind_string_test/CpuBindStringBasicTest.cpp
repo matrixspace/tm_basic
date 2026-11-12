@@ -273,12 +273,35 @@ namespace
         }
     }
 
+    // Review regressions: the shared parser must reject trailing junk and
+    // extra separators instead of silently keeping a numeric prefix.
+    void testReviewRegressions()
+    {
+        for (char const *bad : {"cpus:2foo", "2-3-8", "2-3x", "-1"}) {
+            check(throws([bad] {
+                basic::SharedThreadPoolConfig cfg;
+                cfg.cpusFromString(bad);
+            }), std::string("review: cpusFromString '") + bad + "' throws");
+        }
+#ifdef TM_KIT_BASIC_HAS_HWLOC_CPU_ALLOCATOR
+        for (char const *bad : {"exclude=8foo", "exclude=8-9-10", "exclude=-1"}) {
+            check(throws([bad] { basic::HwlocCpuAllocatorConfig::fromString(bad); }),
+                std::string("review: fromString '") + bad + "' throws");
+        }
+        {
+            auto cfg = basic::HwlocCpuAllocatorConfig::fromString("exclude=8,9");
+            check(eq(cfg.excludeCpus, {8, 9}), "review: fromString exclude=8,9 still accepted");
+        }
+#endif
+    }
+
 } // anonymous namespace
 
 int main()
 {
     testHwlocConfigFromString();
     testSharedPoolCpusFromString();
+    testReviewRegressions();
 
     std::printf("\n%s (%d failure%s)\n",
         failures == 0 ? "PASS" : "FAIL",

@@ -19,3 +19,7 @@
 
 - tm_infra 侧主记录：[../../tm_infra/doc/20261112-cpu-bind-string-api/README.md](../../tm_infra/doc/20261112-cpu-bind-string-api/README.md)
 - tm_kit_reference：`tm_basic/11-hwloc-cpu-allocator.md`
+
+## 代码评审修复（2026-11-12）
+
+评审报告：[codereview.md](codereview.md)。三个问题都出在 tm_infra 的共享解析器和 `bindCurrentThreadBy<Env>`，修复说明见 [tm_infra 记录](../../../tm_infra/doc/20261112-cpu-bind-string-api/README.md#代码评审修复2026-11-12)。tm_basic 侧的源码不需要改动：`cpusFromString` 和 `HwlocCpuAllocatorConfig::fromString` 直接用上了更严格的 `parseCpuList`。`test/cpu_bind_string_test` 新增 8 个回归用例（`cpus:2foo`、`2-3-8`、`exclude=8foo`、`exclude=-1` 等报错，`exclude=8,9` 仍然接受），debug 构建全部通过。
