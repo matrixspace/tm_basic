@@ -3,7 +3,7 @@
 **任务开始时间：** 2026-11-12  
 **任务结束时间：** 2026-11-12  
 **状态：** 完成  
-**分支：** `feature/cpu-bind-string-api`（commit 待填）
+**分支：** `feature/cpu-bind-string-api`（commit `8a93dd4`）
 
 ## 背景
 
