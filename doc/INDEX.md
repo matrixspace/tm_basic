@@ -18,3 +18,5 @@
 - 2026-11-11：[多进程 CPU 自协商（CpuAutoBind 跨进程）](20261111-cpu-cross-process-negotiation/README.md)：新增 `HwlocCrossProcessCpuAllocatorComponent`，每个物理核一个 flock 锁文件，线程/进程退出自动释放；excludeCpus 跨进程生效，显式绑定进程内外独占。
 
 - 2026-11-12：[统一的线程绑核字符串接口（tm_basic 侧）](20261112-cpu-bind-string-api/README.md)：`HwlocCpuAllocatorConfig::fromString` 解析 `exclude/avoid_first/smt/scope/lockdir` 配置串；`SharedThreadPoolConfig::cpusFromString` 解析 CPU 列表串；主记录在 [tm_infra](../../tm_infra/doc/20261112-cpu-bind-string-api/README.md)。
+
+- 2026-11-17：[CommonFlowUtils 自建线程节点适配框架绑核](20261117-common-flow-utils-cpu-bind/README.md)：让 `bunchWith`/`bunchWithProcessing`、`delayer`、`actionWithBufferedState` 支持 `configureThreadedNode` 绑核；infra 新增 `ThreadCpuBinding<StateT>`，修掉 `detach()` 后 `threadHandle()` 返回 0 的既有 bug；评审修复：测试改为 fork 子进程隔离节点生命周期。
