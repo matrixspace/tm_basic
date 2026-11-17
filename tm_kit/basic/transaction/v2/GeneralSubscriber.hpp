@@ -402,14 +402,10 @@ namespace transaction { namespace v2 {
             if constexpr (M::PossiblyMultiThreaded) {
                 while (threadData_.running_) {
                     std::unique_lock<std::mutex> lock(threadData_.inputQueueMutex_);
-                    threadData_.inputQueueCond_.wait_for(lock, std::chrono::milliseconds(1));
+                    threadData_.inputQueueCond_.wait(lock, [this]{ return !threadData_.running_ || !threadData_.inputQueues_[threadData_.inputQueueIncomingIndex_].empty(); });
                     if (!threadData_.running_) {
                         lock.unlock();
                         break;
-                    }
-                    if (threadData_.inputQueues_[threadData_.inputQueueIncomingIndex_].empty()) {
-                        lock.unlock();
-                        continue;
                     }
                     int processingIndex = threadData_.inputQueueIncomingIndex_;
                     threadData_.inputQueueIncomingIndex_ = 1-threadData_.inputQueueIncomingIndex_;
@@ -450,10 +446,11 @@ namespace transaction { namespace v2 {
             if constexpr (M::PossiblyMultiThreaded) {
                 if (threadData_.running_) {
                     threadData_.running_ = false;
+                    threadData_.inputQueueCond_.notify_one();
                     threadData_.workThread_.join();
                 }
             }
-        }       
+        }
         
         void start(typename M::EnvironmentType *) override final {
             if constexpr (M::PossiblyMultiThreaded) {

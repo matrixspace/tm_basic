@@ -202,19 +202,16 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
 
                     void stopThread() {
                         running_ = false;
+                        cond_.notify_one();
                     }
                     void runThread() {
                         while (running_) {
                             {
                                 std::unique_lock<std::mutex> lock(mutex_);
-                                cond_.wait_for(lock, std::chrono::milliseconds(1));
+                                cond_.wait(lock, [this]{ return !running_ || !incoming_.empty(); });
                                 if (!running_) {
                                     lock.unlock();
                                     return;
-                                }
-                                if (incoming_.empty()) {
-                                    lock.unlock();
-                                    continue;
                                 }
                                 processing_.splice(processing_.end(), incoming_);
                                 lock.unlock();

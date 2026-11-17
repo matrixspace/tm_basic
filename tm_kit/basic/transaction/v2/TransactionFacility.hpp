@@ -333,14 +333,10 @@ namespace transaction { namespace v2 {
             if constexpr (M::PossiblyMultiThreaded) {
                 while (threadData_.running_) {
                     std::unique_lock<std::mutex> lock(threadData_.transactionQueueMutex_);
-                    threadData_.transactionQueueCond_.wait_for(lock, std::chrono::milliseconds(1));
+                    threadData_.transactionQueueCond_.wait(lock, [this]{ return !threadData_.running_ || !threadData_.transactionQueues_[threadData_.transactionQueueIncomingIndex_].empty(); });
                     if (!threadData_.running_) {
                         lock.unlock();
                         break;
-                    }
-                    if (threadData_.transactionQueues_[threadData_.transactionQueueIncomingIndex_].empty()) {
-                        lock.unlock();
-                        continue;
                     }
                     int processingIndex = threadData_.transactionQueueIncomingIndex_;
                     threadData_.transactionQueueIncomingIndex_ = 1-threadData_.transactionQueueIncomingIndex_;
@@ -390,6 +386,7 @@ namespace transaction { namespace v2 {
             if constexpr (M::PossiblyMultiThreaded) {
                 if (threadData_.running_) {
                     threadData_.running_ = false;
+                    threadData_.transactionQueueCond_.notify_one();
                     threadData_.transactionThread_.join();
                 }
             }

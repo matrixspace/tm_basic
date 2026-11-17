@@ -649,16 +649,9 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace sim
             }
         }
         void waitForStart() {
-            while (true) {
-                std::unique_lock<std::mutex> lock(startWaiterStruct_->mutex_);
-                startWaiterStruct_->cond_.wait_for(lock, std::chrono::milliseconds(1));
-                if (startWaiterStruct_->started_) {
-                    lock.unlock();
-                    break;
-                } else {
-                    lock.unlock();
-                }
-            }
+            std::unique_lock<std::mutex> lock(startWaiterStruct_->mutex_);
+            startWaiterStruct_->cond_.wait(lock, [this]{ return startWaiterStruct_->started_; });
+            lock.unlock();
         }
         friend class InnerHandler1;
         class InnerHandler1 : public chain_writer_detail::ThreadedHandler<Env, typename infra::RealTimeApp<Env>::template Key<typename InputHandler::InputType>, InnerHandler1> {
