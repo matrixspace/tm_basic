@@ -47,6 +47,7 @@ meson test -C builddir_debug common_flow_utils_cpu_bind_test hwloc_cpu_allocator
 
 ## 相关文档（相关任务、tm_kit_reference 章节）
 
+- [评审报告](REVIEW.md)：2026-11-17 评审发现新增测试存在 P2 生命周期问题，待修复。
 - [tm_infra/20261111-thread-cpu-autobind](../../tm_infra/doc/20261111-thread-cpu-autobind/README.md)
 - [tm_infra/20261112-cpu-bind-string-api](../../tm_infra/doc/20261112-cpu-bind-string-api/README.md)
 - tm_kit_reference：`tm_infra/10-realtime-executors.md`、`tm_basic/05-common-flow-util.md`
