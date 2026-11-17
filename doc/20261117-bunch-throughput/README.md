@@ -3,7 +3,7 @@
 **任务开始时间：** 2026-11-17
 **任务结束时间：** 2026-11-17
 **状态：** 完成
-**分支：** `feature/bunch-throughput`（commit 见文末）
+**分支：** `feature/bunch-throughput`（commit `e339cf2`）
 
 ## 背景
 
@@ -101,4 +101,4 @@ detached 线程）构建 + 运行 ALL PASSED。
 
 ## commit
 
-（提交后补）
+- 代码 + 基准 + 文档：`e339cf2`（`feature/bunch-throughput`）
