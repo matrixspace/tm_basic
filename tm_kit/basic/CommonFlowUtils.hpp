@@ -5,6 +5,7 @@
 #include <optional>
 #include <deque>
 #include <type_traits>
+#include <typeinfo>
 
 #include <tm_kit/infra/KleisliUtils.hpp>
 #include <tm_kit/infra/BasicWithTimeApp.hpp>
@@ -193,9 +194,11 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     typename infra::RealTimeAppComponents<TheEnvironment>::template TimeChecker<false, T> timeChecker_;
                     std::mutex mutex_;
                     std::condition_variable cond_;
+                    infra::ThreadCpuBinding<TheEnvironment> cpuBinding_;
+                    std::optional<std::thread::native_handle_type> handle_;
                     std::thread th_;
                     std::atomic<bool> running_;
-                    std::list<typename M::template InnerData<T>> incoming_, processing_;  
+                    std::list<typename M::template InnerData<T>> incoming_, processing_;
 
                     void stopThread() {
                         running_ = false;
@@ -265,9 +268,10 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                         }                    
                     }
                 public:
-                    BunchAction(B &&buncher) : buncher_(std::move(buncher)), timeChecker_(), mutex_(), cond_(), th_(), running_(false), incoming_(), processing_() {
+                    BunchAction(B &&buncher) : buncher_(std::move(buncher)), timeChecker_(), mutex_(), cond_(), cpuBinding_(), handle_(), th_(), running_(false), incoming_(), processing_() {
                         running_ = true;
                         th_ = std::thread(&BunchAction::runThread, this);
+                        handle_ = th_.native_handle(); // cache before detach(): detach clears the handle
                         th_.detach();
                     }
                     virtual ~BunchAction() {
@@ -283,7 +287,10 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                         putData(std::move(data));   
                     }
                     virtual std::optional<std::thread::native_handle_type> threadHandle() override final {
-                        return th_.native_handle();
+                        return handle_;
+                    }
+                    virtual bool configureThread(infra::ThreadedNodeOptions const &o) override final {
+                        return cpuBinding_.configure(o, handle_, typeid(*this).name());
                     }
                     virtual void setIdleWorker(std::function<void(void *)> worker) override final {
                     }
@@ -1552,7 +1559,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
             decltype(typename M::TimePoint {}-typename M::TimePoint {}) duration
         ) {
             if constexpr (std::is_same_v<M, infra::RealTimeApp<TheEnvironment>>) {
-                class Delayer : public M::template AbstractAction<T,T> {
+                class Delayer : public infra::IRealTimeAppPossiblyThreadedNode, public M::template AbstractAction<T,T> {
                 private:
                     using DurationType = decltype(typename M::TimePoint {}-typename M::TimePoint {});
                     DurationType duration_;
@@ -1560,6 +1567,8 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     std::deque<typename M::template InnerData<T>> data_;
                     std::deque<typename M::template InnerData<T>> toSend_;
                     std::mutex mutex_;
+                    infra::ThreadCpuBinding<TheEnvironment> cpuBinding_;
+                    std::optional<std::thread::native_handle_type> handle_;
                     std::thread th_;
                     std::atomic<bool> running_;
                     typename M::EnvironmentType *env_;
@@ -1609,10 +1618,11 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                         }
                     }
                 public:
-                    Delayer(DurationType duration) : duration_(duration), data_(), toSend_(), mutex_(), th_(), running_(true), env_(nullptr) {
+                    Delayer(DurationType duration) : duration_(duration), data_(), toSend_(), mutex_(), cpuBinding_(), handle_(), th_(), running_(true), env_(nullptr) {
                         th_ = std::thread([this]() {
                             run();
                         });
+                        handle_ = th_.native_handle(); // cache before detach(): detach clears the handle
                         th_.detach();
                     }
                     virtual ~Delayer() {
@@ -1635,6 +1645,12 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                         std::lock_guard<std::mutex> _(mutex_);
                         env_ = data.environment;
                         data_.push_back(std::move(data));
+                    }
+                    virtual std::optional<std::thread::native_handle_type> threadHandle() override final {
+                        return handle_;
+                    }
+                    virtual bool configureThread(infra::ThreadedNodeOptions const &o) override final {
+                        return cpuBinding_.configure(o, handle_, typeid(*this).name());
                     }
                 };
                 return M::template fromAbstractAction<T,T>(new Delayer(duration));
@@ -2276,6 +2292,8 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     State state_;
                     typename infra::RealTimeAppComponents<TheEnvironment>::template TimeChecker<true, Input> timeChecker_;
                     TheEnvironment *env_;
+                    infra::ThreadCpuBinding<TheEnvironment> cpuBinding_;
+                    std::optional<std::thread::native_handle_type> handle_;
                     std::thread thread_;
                     std::mutex mutex_;
                     std::condition_variable cond_;
@@ -2405,12 +2423,15 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                         , state_(std::move(state))
                         , timeChecker_()
                         , env_(nullptr)
+                        , cpuBinding_()
+                        , handle_()
                         , thread_()
                         , mutex_()
                         , cond_()
                         , running_(true)
                     {
                         thread_ = std::thread(&LocalAction::run, this);
+                        handle_ = thread_.native_handle(); // cache before detach(): detach clears the handle
                         thread_.detach();
                     }
                     ~LocalAction() {
@@ -2432,7 +2453,10 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                         }
                     }
                     virtual std::optional<std::thread::native_handle_type> threadHandle() override final {
-                        return thread_.native_handle();
+                        return handle_;
+                    }
+                    virtual bool configureThread(infra::ThreadedNodeOptions const &o) override final {
+                        return cpuBinding_.configure(o, handle_, typeid(*this).name());
                     }
                     virtual bool isThreaded() const override final {
                         return true;
