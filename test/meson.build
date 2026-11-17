@@ -10,6 +10,7 @@ if build_machine.system() == 'linux'
         subdir('common_flow_utils_cpu_bind_test')
     endif
     subdir('simple_graph_bench')
+    subdir('bunch_throughput_bench')
     subdir('chain_writer_loop_test')
     subdir('executor_bench')
 endif

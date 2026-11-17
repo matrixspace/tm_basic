@@ -22,3 +22,5 @@
 - 2026-11-17：[CommonFlowUtils 自建线程节点适配框架绑核](20261117-common-flow-utils-cpu-bind/README.md)：让 `bunchWith`/`bunchWithProcessing`、`delayer`、`actionWithBufferedState` 支持 `configureThreadedNode` 绑核；infra 新增 `ThreadCpuBinding<StateT>`，修掉 `detach()` 后 `threadHandle()` 返回 0 的既有 bug；评审修复：测试改为 fork 子进程隔离节点生命周期。
 
 - 2026-11-17：[修复条件变量无谓词 1ms 轮询等待](20261117-fix-cv-1ms-poll/README.md)：把 `BunchAction::runThread`、`ChainWriter::waitForStart`、transaction 的 `GeneralSubscriber`/`TransactionProcessor` 工作循环从 `wait_for(lock, 1ms)` 改为带谓词阻塞 `wait`，并补齐停止路径缺的 `notify_one`；关联 tm_infra（constTriggerImporter/triggerImporter/bunchedImporter）与 tm_transport（GrpcClientFacility::waitForStart）。
+
+- 2026-11-17：[优化 bunch / bunchWithProcessing 的吞吐](20261117-bunch-throughput/README.md)：`BunchAction` 的 `incoming_`/`processing_` 由 `std::list` 改为 `std::deque`，drain 由 `front()/pop_front()` 改为 `range-for + clear()`，`putData` 只在空→非空时 `notify_one`；新增 `test/bunch_throughput_bench` 对比 list/deque/vector 三容器吞吐（big payload 下 deque 约 3× 于 list，vector 快但扩容拷贝、不支持 move-only 故弃用）。

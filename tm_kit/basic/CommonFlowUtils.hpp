@@ -198,7 +198,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     std::optional<std::thread::native_handle_type> handle_;
                     std::thread th_;
                     std::atomic<bool> running_;
-                    std::list<typename M::template InnerData<T>> incoming_, processing_;
+                    std::deque<typename M::template InnerData<T>> incoming_, processing_;
 
                     void stopThread() {
                         running_ = false;
@@ -213,21 +213,20 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                                     lock.unlock();
                                     return;
                                 }
-                                processing_.splice(processing_.end(), incoming_);
+                                processing_.swap(incoming_);
                                 lock.unlock();
                             }
                             std::vector<T> output;
                             TheEnvironment *env = nullptr;
                             bool isFinal = false;
-                            while (!processing_.empty()) {
-                                auto &data = processing_.front();
+                            for (auto &data : processing_) {
                                 if (timeChecker_(data)) {
                                     env = data.environment;
                                     isFinal = (isFinal || data.timedData.finalFlag);
                                     output.push_back(std::move(data.timedData.value));
                                 }
-                                processing_.pop_front();
                             }
+                            processing_.clear();
                             if constexpr (std::is_same_v<Buncher, void>) {
                                 if (!output.empty()) {
                                     this->publish(typename M::template InnerData<std::vector<T>> {
@@ -257,12 +256,16 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     }
                     void putData(typename M::template InnerData<T> &&data) {
                         if (running_) {
+                            bool wasEmpty;
                             {
                                 std::lock_guard<std::mutex> _(mutex_);
+                                wasEmpty = incoming_.empty();
                                 incoming_.push_back(std::move(data));
                             }
-                            cond_.notify_one();
-                        }                    
+                            if (wasEmpty) {
+                                cond_.notify_one();
+                            }
+                        }
                     }
                 public:
                     BunchAction(B &&buncher) : buncher_(std::move(buncher)), timeChecker_(), mutex_(), cond_(), cpuBinding_(), handle_(), th_(), running_(false), incoming_(), processing_() {
