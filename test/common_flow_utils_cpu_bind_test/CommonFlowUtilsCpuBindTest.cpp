@@ -12,6 +12,8 @@
 #ifdef __linux__
 #include <pthread.h>
 #include <sched.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 using namespace dev::cd606::tm;
@@ -111,38 +113,76 @@ namespace
         void operator()(StateT &) {}
     };
 
+    // Each CommonFlowUtils self-threaded node starts a detached worker thread and
+    // its destructor does not join that thread. Destroying the node while the
+    // thread is still alive frees members the thread keeps reading (reproduced as
+    // heap-use-after-free in BunchAction::runThread() under -fsanitize=address).
+    // The test cannot join a detached thread, so it runs each node in a child
+    // process that never destroys it: the child _exit()s and the OS reclaims both
+    // the thread and the node. This mirrors the fork-based isolation in
+    // test/cpu_cross_process_test/CrossProcessCpuTest.cpp.
     template <class MakeNode>
     void testNode(MakeNode makeNode, std::string const &name)
     {
-        {
-            auto node = makeNode();
-            bool ok = false;
-            std::string msg;
-            if (throws([&] { ok = M::configureThreadedNode(node, infra::ThreadedNodeOptions().CpuAutoBind()); }, &msg)) {
-                check(false, name + ": CpuAutoBind threw: " + msg);
-            } else {
-                auto h = M::threadHandle(node);
-                auto aff = h ? affinityOf(*h) : std::vector<int>{};
-                check(ok && aff.size() == 1, name + ": CpuAutoBind pins the node thread to one CPU");
-            }
+#ifdef __linux__
+        pid_t pid = ::fork();
+        if (pid < 0) {
+            check(false, name + ": fork failed");
+            return;
         }
-        {
-            auto cpu = aUsableCpu();
-            if (!cpu) {
-                std::cout << "skip: no usable CPU for explicit Cpus()\n";
-                return;
+        if (pid == 0) {
+            // Child: own copy of the failure counter. Both nodes stay alive until
+            // _exit(), so their destructors never race with the detached threads.
+            failures = 0;
+            using Node = decltype(makeNode());
+            Node node1 = makeNode();
+            {
+                bool ok = false;
+                std::string msg;
+                if (throws([&] { ok = M::configureThreadedNode(node1, infra::ThreadedNodeOptions().CpuAutoBind()); }, &msg)) {
+                    check(false, name + ": CpuAutoBind threw: " + msg);
+                } else {
+                    auto h = M::threadHandle(node1);
+                    auto aff = h ? affinityOf(*h) : std::vector<int>{};
+                    check(ok && aff.size() == 1, name + ": CpuAutoBind pins the node thread to one CPU");
+                }
             }
-            auto node = makeNode();
-            bool ok = false;
-            std::string msg;
-            if (throws([&] { ok = M::configureThreadedNode(node, infra::ThreadedNodeOptions().Cpus({*cpu})); }, &msg)) {
-                check(false, name + ": Cpus({...}) threw: " + msg);
-            } else {
-                auto h = M::threadHandle(node);
-                auto aff = h ? affinityOf(*h) : std::vector<int>{};
-                check(ok && aff.size() == 1 && aff.front() == *cpu, name + ": Cpus() pins the node thread to the requested CPU");
+            {
+                auto cpu = aUsableCpu();
+                if (!cpu) {
+                    std::cout << "skip: no usable CPU for explicit Cpus()\n";
+                } else {
+                    Node node2 = makeNode();
+                    bool ok = false;
+                    std::string msg;
+                    if (throws([&] { ok = M::configureThreadedNode(node2, infra::ThreadedNodeOptions().Cpus({*cpu})); }, &msg)) {
+                        check(false, name + ": Cpus({...}) threw: " + msg);
+                    } else {
+                        auto h = M::threadHandle(node2);
+                        auto aff = h ? affinityOf(*h) : std::vector<int>{};
+                        check(ok && aff.size() == 1 && aff.front() == *cpu, name + ": Cpus() pins the node thread to the requested CPU");
+                    }
+                }
             }
+            std::cout.flush();
+            ::_exit(failures ? 1 : 0);
         }
+        int status = 0;
+        if (::waitpid(pid, &status, 0) < 0) {
+            check(false, name + ": waitpid failed");
+            return;
+        }
+        if (!WIFEXITED(status)) {
+            check(false, name + ": child did not exit normally");
+            return;
+        }
+        failures += (WEXITSTATUS(status) != 0);
+#else
+        // No fork/affinity support here; the Linux-only build exercises the path
+        // above, so this fallback just reports a skip rather than running checks
+        // that cannot observe affinity.
+        std::cout << "skip: " << name << " (no fork/affinity support)\n";
+#endif
     }
 } // namespace
 
