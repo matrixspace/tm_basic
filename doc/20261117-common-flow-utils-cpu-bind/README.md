@@ -1,9 +1,9 @@
 # CommonFlowUtils 自建线程节点适配框架绑核
 
 **任务开始时间：** 2026-11-17
-**任务结束时间：**
-**状态：** 进行中
-**分支：** `feature/common-flow-utils-cpu-bind`（commit 待补）
+**任务结束时间：** 2026-11-17
+**状态：** 完成
+**分支：** `feature/common-flow-utils-cpu-bind`（tm_basic commit `72289a9`，tm_infra commit `9a13b1e`）
 
 ## 背景
 
@@ -30,7 +30,16 @@
 
 ## 测试与验证（命令、构建类型、结果）
 
-待补（见 [PLAN.md](PLAN.md) 测试章节）。
+debug 构建，只编译相关目标（`-j4`）：
+
+```bash
+cd build-common && source ./build-env-setting.sh
+# tm_infra：meson setup + ninja + install（安装含 ThreadCpuBinding 的新头文件）
+# tm_basic：ninja -C builddir_debug test/common_flow_utils_cpu_bind_test/common_flow_utils_cpu_bind_test
+meson test -C builddir_debug common_flow_utils_cpu_bind_test hwloc_cpu_allocator_test cpu_bind_string_basic_test
+```
+
+结果：新增 `common_flow_utils_cpu_bind_test` 8 项断言全过（bunch / bunchWithProcessing / delayer / actionWithBufferedState 各测 CpuAutoBind + Cpus）；既有 `hwloc_cpu_allocator_test`、`cpu_bind_string_basic_test` 通过，无回归。
 
 ## 兼容性与注意事项
 
