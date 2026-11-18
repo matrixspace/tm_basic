@@ -2,6 +2,8 @@
 #define TM_KIT_BASIC_BYTE_DATA_WITH_TOPIC_RECORD_FILE_IMPORTER_EXPORTER_HPP_
 
 #include <type_traits>
+#include <mutex>
+#include <condition_variable>
 #include <tm_kit/infra/RealTimeApp.hpp>
 #include <tm_kit/infra/SinglePassIterationApp.hpp>
 #include <tm_kit/infra/TopDownSinglePassIterationApp.hpp>
@@ -30,6 +32,8 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                 bool overrideDate_;
                 std::optional<std::chrono::system_clock::time_point> virtualToday_;
                 std::atomic<bool> running_;
+                std::mutex mutex_;
+                std::condition_variable cond_;
 
                 void run() {
                     reader_.startReadingByteDataWithTopicRecordFile(*is_);
@@ -82,7 +86,13 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                                     env_, *d
                                 });
                             } else {
-                                env_->sleepFor(d->timePoint-t);
+                                {
+                                    std::unique_lock<std::mutex> lock(mutex_);
+                                    cond_.wait_for(lock, env_->actualDuration(d->timePoint-t), [this]{ return !running_; });
+                                }
+                                if (!running_) {
+                                    break;
+                                }
                                 this->publish(typename infra::RealTimeApp<Env>::template InnerData<ByteDataWithTopic> {
                                     env_, *d
                                 });
@@ -92,19 +102,29 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     }
                 }
             public:
-                LocalI(std::istream &is, std::vector<std::byte> const &fileMagic, std::vector<std::byte> const &recordMagic, bool overrideDate) : is_(&is), reader_(fileMagic, recordMagic), env_(nullptr), th_(), overrideDate_(overrideDate), virtualToday_(std::nullopt), running_(false) {}
+                LocalI(std::istream &is, std::vector<std::byte> const &fileMagic, std::vector<std::byte> const &recordMagic, bool overrideDate) : is_(&is), reader_(fileMagic, recordMagic), env_(nullptr), th_(), overrideDate_(overrideDate), virtualToday_(std::nullopt), running_(false), mutex_(), cond_() {}
+                virtual ~LocalI() {
+                    stopThread();
+                }
                 virtual void start(Env *env) override final {
                     env_ = env;
                     running_ = true;
                     th_ = std::thread(&LocalI::run, this);
-                    th_.detach();
                 }
                 virtual void control(Env *env, std::string const &command, std::vector<std::string> const &params) override final {
                     if (command == "stop") {
-                        running_ = false;
-                        try {
+                        stopThread();
+                    }
+                }
+            private:
+                void stopThread() {
+                    running_ = false;
+                    cond_.notify_all();
+                    if (th_.joinable()) {
+                        if (th_.get_id() == std::this_thread::get_id()) {
+                            th_.detach();
+                        } else {
                             th_.join();
-                        } catch (...) {
                         }
                     }
                 }

@@ -271,11 +271,17 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     BunchAction(B &&buncher) : buncher_(std::move(buncher)), timeChecker_(), mutex_(), cond_(), cpuBinding_(), handle_(), th_(), running_(false), incoming_(), processing_() {
                         running_ = true;
                         th_ = std::thread(&BunchAction::runThread, this);
-                        handle_ = th_.native_handle(); // cache before detach(): detach clears the handle
-                        th_.detach();
+                        handle_ = th_.native_handle(); // cached while the thread is joinable
                     }
                     virtual ~BunchAction() {
                         stopThread();
+                        if (th_.joinable()) {
+                            if (th_.get_id() == std::this_thread::get_id()) {
+                                th_.detach();
+                            } else {
+                                th_.join();
+                            }
+                        }
                     }
                     virtual bool isThreaded() const override final {
                         return true;
@@ -1622,16 +1628,17 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                         th_ = std::thread([this]() {
                             run();
                         });
-                        handle_ = th_.native_handle(); // cache before detach(): detach clears the handle
-                        th_.detach();
+                        handle_ = th_.native_handle(); // cached while the thread is joinable
                     }
                     virtual ~Delayer() {
                         running_ = false;
-                        try {
-                            if (th_.joinable()) {
+                        if (th_.joinable()) {
+                            if (th_.get_id() == std::this_thread::get_id()) {
+                                th_.detach();
+                            } else {
                                 th_.join();
                             }
-                        } catch (std::exception const &) {}
+                        }
                     }
                     virtual bool isThreaded() const override final {
                         return true;
@@ -2431,17 +2438,17 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                         , running_(true)
                     {
                         thread_ = std::thread(&LocalAction::run, this);
-                        handle_ = thread_.native_handle(); // cache before detach(): detach clears the handle
-                        thread_.detach();
+                        handle_ = thread_.native_handle(); // cached while the thread is joinable
                     }
                     ~LocalAction() {
                         running_ = false;
                         cond_.notify_one();
-                        try {
-                            if (thread_.joinable()) {
+                        if (thread_.joinable()) {
+                            if (thread_.get_id() == std::this_thread::get_id()) {
+                                thread_.detach();
+                            } else {
                                 thread_.join();
                             }
-                        } catch (std::exception const &) {
                         }
                     }
                     virtual void handle(typename M::template InnerData<Input> &&data) override final {

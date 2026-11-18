@@ -444,10 +444,14 @@ namespace transaction { namespace v2 {
             : subscriptionMap_(), idInfoMap_(), accountInfoMap_(), mutex_(), dataStorePtr_(dataStorePtr), threadData_() {}
         virtual ~GeneralSubscriber() {
             if constexpr (M::PossiblyMultiThreaded) {
-                if (threadData_.running_) {
-                    threadData_.running_ = false;
-                    threadData_.inputQueueCond_.notify_one();
-                    threadData_.workThread_.join();
+                threadData_.running_ = false;
+                threadData_.inputQueueCond_.notify_one();
+                if (threadData_.workThread_.joinable()) {
+                    if (threadData_.workThread_.get_id() == std::this_thread::get_id()) {
+                        threadData_.workThread_.detach();
+                    } else {
+                        threadData_.workThread_.join();
+                    }
                 }
             }
         }
@@ -456,7 +460,6 @@ namespace transaction { namespace v2 {
             if constexpr (M::PossiblyMultiThreaded) {
                 threadData_.running_ = true;
                 threadData_.workThread_ = std::thread(&GeneralSubscriber::runWorkThread, this);
-                threadData_.workThread_.detach();
             }
         }
         void handle(typename M::template InnerData<typename M::template Key<typename Types::InputWithAccountInfo>> &&input) override final {

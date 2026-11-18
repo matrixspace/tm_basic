@@ -384,10 +384,14 @@ namespace transaction { namespace v2 {
         }
         ~TransactionProcessor() {
             if constexpr (M::PossiblyMultiThreaded) {
-                if (threadData_.running_) {
-                    threadData_.running_ = false;
-                    threadData_.transactionQueueCond_.notify_one();
-                    threadData_.transactionThread_.join();
+                threadData_.running_ = false;
+                threadData_.transactionQueueCond_.notify_one();
+                if (threadData_.transactionThread_.joinable()) {
+                    if (threadData_.transactionThread_.get_id() == std::this_thread::get_id()) {
+                        threadData_.transactionThread_.detach();
+                    } else {
+                        threadData_.transactionThread_.join();
+                    }
                 }
             }
         }
@@ -398,7 +402,6 @@ namespace transaction { namespace v2 {
             if constexpr (M::PossiblyMultiThreaded) {
                 threadData_.running_ = true;
                 threadData_.transactionThread_ = std::thread(&TransactionProcessor::runTransactionThread, this);
-                threadData_.transactionThread_.detach();
             }
         }
         void handle(typename M::template InnerData<
