@@ -3,7 +3,7 @@
 **任务开始时间：** 2026-11-18
 **任务结束时间：** 2026-11-18
 **状态：** 完成
-**分支：** `feature/graceful-thread-stop`（tm_infra 与 tm_basic 两个 worktree 各自同名分支）
+**分支：** `feature/graceful-thread-stop`（tm_infra `df0f645` / tm_basic `01519b9`）
 
 ## 背景
 
