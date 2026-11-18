@@ -24,3 +24,5 @@
 - 2026-11-17：[修复条件变量无谓词 1ms 轮询等待](20261117-fix-cv-1ms-poll/README.md)：把 `BunchAction::runThread`、`ChainWriter::waitForStart`、transaction 的 `GeneralSubscriber`/`TransactionProcessor` 工作循环从 `wait_for(lock, 1ms)` 改为带谓词阻塞 `wait`，并补齐停止路径缺的 `notify_one`；关联 tm_infra（constTriggerImporter/triggerImporter/bunchedImporter）与 tm_transport（GrpcClientFacility::waitForStart）。
 
 - 2026-11-17：[优化 bunch / bunchWithProcessing 的吞吐](20261117-bunch-throughput/README.md)：`BunchAction` 的 `incoming_`/`processing_` 由 `std::list` 改为 `std::deque`，drain 由 `front()/pop_front()` 改为 `range-for + clear()`，`putData` 只在空→非空时 `notify_one`；新增 `test/bunch_throughput_bench` 对比 list/deque/vector 三容器吞吐（big payload 下 deque 约 3× 于 list，vector 快但扩容拷贝、不支持 move-only 故弃用）。
+
+- 2026-11-18：[自带线程节点去 detach、实现优雅停止](20261118-graceful-thread-stop/README.md)：扫描 tm_infra/tm_basic/tm_transport，统一修复"detach + 无效 join"反模式；14 处自带线程节点（CommonFlowUtils 3、ChainWriter 2、ByteData/GenericIOStream 文件回放 3、transaction 2、RealTimeApp 4）改为析构真正 join、实现优雅停止，文件回放 importer 改为可中断 sleep；方案已审核，实施中。

@@ -21,9 +21,9 @@ using namespace dev::cd606::tm;
 // CommonFlowUtils self-threaded nodes (bunch / bunchWithProcessing, delayer,
 // actionWithBufferedState) must be pinnable through
 // RealTimeApp::configureThreadedNode just like executor-threaded nodes. Their
-// internal threads are detached, so the native handle must have been cached
-// before detach(); this test verifies that CpuAutoBind() and Cpus() actually
-// change the node thread's affinity.
+// internal threads are kept joinable and joined on destruction; the native
+// handle is cached while the thread is joinable. This test verifies that
+// CpuAutoBind() and Cpus() actually change the node thread's affinity.
 
 #ifdef TM_KIT_BASIC_HAS_HWLOC_CPU_ALLOCATOR
 
@@ -113,13 +113,11 @@ namespace
         void operator()(StateT &) {}
     };
 
-    // Each CommonFlowUtils self-threaded node starts a detached worker thread and
-    // its destructor does not join that thread. Destroying the node while the
-    // thread is still alive frees members the thread keeps reading (reproduced as
-    // heap-use-after-free in BunchAction::runThread() under -fsanitize=address).
-    // The test cannot join a detached thread, so it runs each node in a child
-    // process that never destroys it: the child _exit()s and the OS reclaims both
-    // the thread and the node. This mirrors the fork-based isolation in
+    // Each CommonFlowUtils self-threaded node keeps its worker thread joinable
+    // and joins it on destruction. To keep the affinity assertions independent of
+    // the node's own teardown, this test runs each node in a child process that
+    // never destroys it: the child _exit()s and the OS reclaims both the thread
+    // and the node. This mirrors the fork-based isolation in
     // test/cpu_cross_process_test/CrossProcessCpuTest.cpp.
     template <class MakeNode>
     void testNode(MakeNode makeNode, std::string const &name)

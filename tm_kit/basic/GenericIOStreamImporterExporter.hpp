@@ -2,6 +2,8 @@
 #define TM_KIT_BASIC_GENERIC_IO_STREAM_IMPORTER_EXPORTER_HPP_
 
 #include <type_traits>
+#include <mutex>
+#include <condition_variable>
 #include <iostream>
 #include <chrono>
 #include <cstddef>
@@ -153,6 +155,8 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                 Env *env_;
                 std::thread th_;
                 std::atomic<bool> running_;
+                std::mutex mutex_;
+                std::condition_variable cond_;
 
                 void run() {
                     GenericIOStreamImporterExporterHelper::template startQueue<infra::RealTimeApp<Env>,T,Reader,DataComparer>(
@@ -179,7 +183,13 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                             } else if (ret->timedData.timePoint == t) {
                                 this->publish(std::move(*ret));
                             } else {
-                                env_->sleepFor(ret->timedData.timePoint-t);
+                                {
+                                    std::unique_lock<std::mutex> lock(mutex_);
+                                    cond_.wait_for(lock, env_->actualDuration(ret->timedData.timePoint-t), [this]{ return !running_; });
+                                }
+                                if (!running_) {
+                                    break;
+                                }
                                 this->publish(std::move(*ret));
                                 break;
                             }
@@ -199,19 +209,31 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     , env_(nullptr)
                     , th_()
                     , running_(false)
+                    , mutex_()
+                    , cond_()
                 {}
+                virtual ~LocalI() {
+                    stopThread();
+                }
                 virtual void start(Env *env) override final {
                     env_ = env;
                     running_ = true;
                     th_ = std::thread(&LocalI::run, this);
-                    th_.detach();
                 }
                 virtual void control(Env *env, std::string const &command, std::vector<std::string> const &params) override final {
                     if (command == "stop") {
-                        running_ = false;
-                        try {
+                        stopThread();
+                    }
+                }
+            private:
+                void stopThread() {
+                    running_ = false;
+                    cond_.notify_all();
+                    if (th_.joinable()) {
+                        if (th_.get_id() == std::this_thread::get_id()) {
+                            th_.detach();
+                        } else {
                             th_.join();
-                        } catch (...) {
                         }
                     }
                 }
@@ -233,6 +255,8 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                 Env *env_;
                 std::thread th_;
                 std::atomic<bool> running_;
+                std::mutex mutex_;
+                std::condition_variable cond_;
 
                 void run() {
                     reader_.start(env_, *stream_);
@@ -264,7 +288,13 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                                     }
                                 });
                             } else {
-                                env_->sleepFor(dataT-t);
+                                {
+                                    std::unique_lock<std::mutex> lock(mutex_);
+                                    cond_.wait_for(lock, env_->actualDuration(dataT-t), [this]{ return !running_; });
+                                }
+                                if (!running_) {
+                                    break;
+                                }
                                 this->publish(typename infra::RealTimeApp<Env>::template InnerData<T> {
                                     env_
                                     , {
@@ -288,19 +318,31 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     , env_(nullptr)
                     , th_()
                     , running_(false)
+                    , mutex_()
+                    , cond_()
                 {}
+                virtual ~LocalI() {
+                    stopThread();
+                }
                 virtual void start(Env *env) override final {
                     env_ = env;
                     running_ = true;
                     th_ = std::thread(&LocalI::run, this);
-                    th_.detach();
                 }
                 virtual void control(Env *env, std::string const &command, std::vector<std::string> const &params) override final {
                     if (command == "stop") {
-                        running_ = false;
-                        try {
+                        stopThread();
+                    }
+                }
+            private:
+                void stopThread() {
+                    running_ = false;
+                    cond_.notify_all();
+                    if (th_.joinable()) {
+                        if (th_.get_id() == std::this_thread::get_id()) {
+                            th_.detach();
+                        } else {
                             th_.join();
-                        } catch (...) {
                         }
                     }
                 }

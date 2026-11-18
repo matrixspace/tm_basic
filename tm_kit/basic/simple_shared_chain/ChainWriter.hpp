@@ -22,7 +22,7 @@
 namespace dev { namespace cd606 { namespace tm { namespace basic { namespace simple_shared_chain {
                     namespace chain_writer_detail
                     {
-                        // Local loops copied from tm_infra 6836234^; detached lifecycle retained.
+                        // Local loops copied from tm_infra 6836234^; threads are joined on teardown for graceful stop.
                         template <class Env, class Item, class W>
                         class ThreadedHandler : public infra::IRealTimeAppPossiblyThreadedNode, public virtual infra::RealTimeAppComponents<Env>::template IHandler<Item> {
                         private:
@@ -87,18 +87,18 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace sim
                             virtual ~ThreadedHandler()
                             {
                                 stopThread();
-                                try {
-                                    if (th_.joinable()) {
+                                if (th_.joinable()) {
+                                    if (th_.get_id() == std::this_thread::get_id()) {
+                                        th_.detach();
+                                    } else {
                                         th_.join();
                                     }
-                                } catch (...) {
                                 }
                             }
                             void startThread()
                             {
                                 running_ = true;
                                 th_ = std::thread(&ThreadedHandler::runThread, this);
-                                th_.detach();
                             }
                             virtual std::optional<std::thread::native_handle_type> threadHandle() override final
                             {
@@ -177,18 +177,18 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace sim
                             virtual ~BusyLoopThreadedHandler()
                             {
                                 stopThread();
-                                try {
-                                    if (th_.joinable()) {
+                                if (th_.joinable()) {
+                                    if (th_.get_id() == std::this_thread::get_id()) {
+                                        th_.detach();
+                                    } else {
                                         th_.join();
                                     }
-                                } catch (...) {
                                 }
                             }
                             void startThread()
                             {
                                 running_ = true;
                                 th_ = std::thread(&BusyLoopThreadedHandler::runThread, this);
-                                th_.detach();
                             }
                             virtual std::optional<std::thread::native_handle_type> threadHandle() override final
                             {
