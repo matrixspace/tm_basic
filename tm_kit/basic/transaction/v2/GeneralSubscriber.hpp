@@ -444,7 +444,10 @@ namespace transaction { namespace v2 {
             : subscriptionMap_(), idInfoMap_(), accountInfoMap_(), mutex_(), dataStorePtr_(dataStorePtr), threadData_() {}
         virtual ~GeneralSubscriber() {
             if constexpr (M::PossiblyMultiThreaded) {
-                threadData_.running_ = false;
+                {
+                    std::lock_guard<std::mutex> lock(threadData_.inputQueueMutex_);
+                    threadData_.running_ = false;
+                }
                 threadData_.inputQueueCond_.notify_one();
                 if (threadData_.workThread_.joinable()) {
                     if (threadData_.workThread_.get_id() == std::this_thread::get_id()) {

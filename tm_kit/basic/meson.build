@@ -22,6 +22,7 @@ tm_basic_headers = [
     , 'AppClockHelper.hpp'
     , 'TriviallySerializable.hpp'
     , 'GenericIOStreamImporterExporter.hpp'
+    , 'InterruptibleClockWait.hpp'
     , 'NotConstructibleStruct.hpp'
     , 'MoodycamelThreadedExecutor.hpp'
     , 'RealTimeSharedPoolExecutor.hpp'

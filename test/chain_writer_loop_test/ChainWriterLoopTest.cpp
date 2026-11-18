@@ -97,6 +97,33 @@ void testChain(bool busy, bool noYield)
     check(complete && ordered, busy ? (noYield ? "ChainWriter noYield writes FIFO" : "ChainWriter busyLoop writes FIFO") : "ChainWriter blocking writes FIFO");
 }
 
+struct ThrowingChain : Chain {
+    static constexpr bool DataLockIsTrivial = false;
+    void acquireLock() {}
+    void releaseLock() {}
+    std::optional<ItemType> fetchNext(ItemType const &) {
+        throw std::runtime_error("initial scan failed");
+    }
+};
+
+void testFailedStartup(bool busy)
+{
+    Env env;
+    ThrowingChain chain;
+    bool threw = false;
+    {
+        sc::ChainWriter<M, ThrowingChain, Folder, Input> writer(
+            &chain, sc::ChainPollingPolicy{}.BusyLoop(busy));
+        try {
+            writer.start(&env);
+        } catch (std::runtime_error const &) {
+            threw = true;
+        }
+    }
+    check(threw, busy ? "busy ChainWriter tears down after startup failure"
+                     : "blocking ChainWriter tears down after startup failure");
+}
+
 // Exercise the exact local blocking loop with an item arriving while a callback
 // is running. Its notification precedes wait_for, so the predicate is essential.
 class Loop : public sc::chain_writer_detail::ThreadedHandler<Env, int, Loop> {
@@ -154,6 +181,8 @@ void testLoop()
 int main()
 {
     testLoop();
+    testFailedStartup(false);
+    testFailedStartup(true);
     testChain(false, false);
     testChain(true, false);
     testChain(true, true);
