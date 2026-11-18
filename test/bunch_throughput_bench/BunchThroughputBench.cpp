@@ -186,7 +186,7 @@ namespace {
     template <class T, class ActionT>
     bool measureNode(char const *name, ActionT bunchAction, int64_t messages, int64_t warmup)
     {
-        auto *env = new Env(); //leaked: detached node threads outlive main
+        auto *env = new Env(); //leaked: node threads outlive main
         auto *r = new R(env);
         auto *src = new PushSource<T>();
         auto *sink = new BatchSink<T>();
@@ -238,7 +238,7 @@ namespace {
             std::fprintf(stderr, "%s: did not deliver exact expected items (got=%lld bad=%lld)\n"
                 , name, static_cast<long long>(got), static_cast<long long>(bad));
         }
-        //graph leaked on purpose: detached node threads outlive main
+        //graph leaked on purpose: node threads outlive main
         return ok;
     }
 

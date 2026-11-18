@@ -74,7 +74,7 @@ struct Input {
 };
 void testChain(bool busy, bool noYield)
 {
-    // Preserve the baseline detached lifecycle: graph objects live to process exit.
+    // Preserve the baseline lifecycle: graph objects live to process exit.
     auto *env = new Env;
     auto *chain = new Chain;
     using Writer = sc::ChainWriter<M, Chain, Folder, Input>;
