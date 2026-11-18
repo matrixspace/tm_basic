@@ -17,3 +17,4 @@ endif
 
 subdir('shared_pool_executor_test')
 subdir('cpu_bind_string_test')
+subdir('realtime_shutdown_test')

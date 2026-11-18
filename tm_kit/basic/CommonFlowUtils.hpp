@@ -21,6 +21,7 @@
 #include <tm_kit/basic/CounterComponent.hpp>
 #include <tm_kit/basic/ByteData.hpp>
 #include <tm_kit/basic/PrintHelper.hpp>
+#include <tm_kit/basic/InterruptibleClockWait.hpp>
 
 namespace dev { namespace cd606 { namespace tm { namespace basic {
 
@@ -201,7 +202,10 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     std::deque<typename M::template InnerData<T>> incoming_, processing_;
 
                     void stopThread() {
-                        running_ = false;
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            running_ = false;
+                        }
                         cond_.notify_one();
                     }
                     void runThread() {
@@ -1573,6 +1577,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     std::deque<typename M::template InnerData<T>> data_;
                     std::deque<typename M::template InnerData<T>> toSend_;
                     std::mutex mutex_;
+                    std::condition_variable cond_;
                     infra::ThreadCpuBinding<TheEnvironment> cpuBinding_;
                     std::optional<std::thread::native_handle_type> handle_;
                     std::thread th_;
@@ -1607,19 +1612,20 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                                     }
                                 }
                             }
-                            while (!toSend_.empty()) {
+                            while (running_ && !toSend_.empty()) {
                                 this->publish(std::move(toSend_.front()));
                                 toSend_.pop_front();
                             }
+                            if (!running_) {
+                                return;
+                            }
                             if (!env) {
-                                std::this_thread::sleep_for(std::chrono::microseconds(100));
+                                std::unique_lock<std::mutex> lock(mutex_);
+                                cond_.wait_for(lock, std::chrono::microseconds(100), [this] { return !running_; });
                             } else {
                                 auto n = env->now();
-                                if (nextTp && *nextTp > n) {
-                                    env->sleepFor(*nextTp-n);
-                                } else {
-                                    env->sleepFor(duration_);
-                                }
+                                auto delay = (nextTp && *nextTp > n) ? *nextTp-n : duration_;
+                                clock_wait_detail::wait(env, delay, mutex_, cond_, running_);
                             }
                         }
                     }
@@ -1631,7 +1637,11 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                         handle_ = th_.native_handle(); // cached while the thread is joinable
                     }
                     virtual ~Delayer() {
-                        running_ = false;
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            running_ = false;
+                        }
+                        cond_.notify_one();
                         if (th_.joinable()) {
                             if (th_.get_id() == std::this_thread::get_id()) {
                                 th_.detach();

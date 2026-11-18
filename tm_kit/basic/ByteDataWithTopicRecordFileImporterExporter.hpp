@@ -10,6 +10,7 @@
 #include <tm_kit/infra/TraceNodesComponent.hpp>
 #include <tm_kit/infra/BasicWithTimeApp.hpp>
 #include <tm_kit/basic/ByteDataWithTopicRecordFile.hpp>
+#include <tm_kit/basic/InterruptibleClockWait.hpp>
 
 namespace dev { namespace cd606 { namespace tm { namespace basic {
 
@@ -40,15 +41,18 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     while (running_) {
                         TM_INFRA_IMPORTER_TRACER(env_);
                         auto t = env_->now();
-                        while (true) {
+                        while (running_) {
                             auto d = reader_.readByteDataWithTopicRecord(*is_);
+                            if (!running_) {
+                                break;
+                            }
                             if (!d) {
                                 if constexpr (PublishFinalEmptyMessage) {
                                     this->publish(typename infra::RealTimeApp<Env>::template InnerData<ByteDataWithTopic> {
                                         env_, {env_->now(), ByteDataWithTopic {std::string{}, std::string{}}, true}
                                     });
                                 }
-                                running_ = false;
+                                requestStop();
                                 break;
                             }
                             
@@ -86,10 +90,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                                     env_, *d
                                 });
                             } else {
-                                {
-                                    std::unique_lock<std::mutex> lock(mutex_);
-                                    cond_.wait_for(lock, env_->actualDuration(d->timePoint-t), [this]{ return !running_; });
-                                }
+                                clock_wait_detail::wait(env_, d->timePoint-t, mutex_, cond_, running_);
                                 if (!running_) {
                                     break;
                                 }
@@ -104,7 +105,14 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
             public:
                 LocalI(std::istream &is, std::vector<std::byte> const &fileMagic, std::vector<std::byte> const &recordMagic, bool overrideDate) : is_(&is), reader_(fileMagic, recordMagic), env_(nullptr), th_(), overrideDate_(overrideDate), virtualToday_(std::nullopt), running_(false), mutex_(), cond_() {}
                 virtual ~LocalI() {
-                    stopThread();
+                    requestStop();
+                    if (th_.joinable()) {
+                        if (th_.get_id() == std::this_thread::get_id()) {
+                            th_.detach();
+                        } else {
+                            th_.join();
+                        }
+                    }
                 }
                 virtual void start(Env *env) override final {
                     env_ = env;
@@ -113,20 +121,16 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                 }
                 virtual void control(Env *env, std::string const &command, std::vector<std::string> const &params) override final {
                     if (command == "stop") {
-                        stopThread();
+                        requestStop();
                     }
                 }
             private:
-                void stopThread() {
-                    running_ = false;
-                    cond_.notify_all();
-                    if (th_.joinable()) {
-                        if (th_.get_id() == std::this_thread::get_id()) {
-                            th_.detach();
-                        } else {
-                            th_.join();
-                        }
+                void requestStop() {
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        running_ = false;
                     }
+                    cond_.notify_all();
                 }
             };
             return infra::RealTimeApp<Env>::template importer(new LocalI(is, fileMagic, recordMagic, overrideDate));

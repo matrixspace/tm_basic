@@ -100,14 +100,14 @@ namespace
         std::vector<int> operator()(std::vector<int> &&v) { return std::move(v); }
     };
 
-    // actionWithBufferedState callbacks: only need to compile and default-
-    // construct; the node is never fed data here, so they never actually run.
+    // The buffered action may call Producer while idle. This fixture does
+    // not attach an environment, so it must never publish a value.
     using StateT = int;
     struct Updater {
         void operator()(int &&, StateT &) {}
     };
     struct Producer {
-        int operator()(StateT &, bool *) { return 0; }
+        std::optional<int> operator()(StateT &, bool *) { return std::nullopt; }
     };
     struct Resetter {
         void operator()(StateT &) {}
@@ -120,7 +120,7 @@ namespace
     // and the node. This mirrors the fork-based isolation in
     // test/cpu_cross_process_test/CrossProcessCpuTest.cpp.
     template <class MakeNode>
-    void testNode(MakeNode makeNode, std::string const &name)
+    void testBinding(MakeNode makeNode, std::string const &name, bool automatic)
     {
 #ifdef __linux__
         pid_t pid = ::fork();
@@ -129,38 +129,30 @@ namespace
             return;
         }
         if (pid == 0) {
-            // Child: own copy of the failure counter. Both nodes stay alive until
-            // _exit(), so their destructors never race with the worker threads.
             failures = 0;
-            using Node = decltype(makeNode());
-            Node node1 = makeNode();
-            {
-                bool ok = false;
-                std::string msg;
-                if (throws([&] { ok = M::configureThreadedNode(node1, infra::ThreadedNodeOptions().CpuAutoBind()); }, &msg)) {
-                    check(false, name + ": CpuAutoBind threw: " + msg);
-                } else {
-                    auto h = M::threadHandle(node1);
-                    auto aff = h ? affinityOf(*h) : std::vector<int>{};
-                    check(ok && aff.size() == 1, name + ": CpuAutoBind pins the node thread to one CPU");
-                }
+            auto cpu = automatic ? std::nullopt : aUsableCpu();
+            if (!automatic && !cpu) {
+                std::cout << "skip: no usable CPU for explicit Cpus()\n";
+                std::cout.flush();
+                ::_exit(0);
             }
-            {
-                auto cpu = aUsableCpu();
-                if (!cpu) {
-                    std::cout << "skip: no usable CPU for explicit Cpus()\n";
-                } else {
-                    Node node2 = makeNode();
-                    bool ok = false;
-                    std::string msg;
-                    if (throws([&] { ok = M::configureThreadedNode(node2, infra::ThreadedNodeOptions().Cpus({*cpu})); }, &msg)) {
-                        check(false, name + ": Cpus({...}) threw: " + msg);
-                    } else {
-                        auto h = M::threadHandle(node2);
-                        auto aff = h ? affinityOf(*h) : std::vector<int>{};
-                        check(ok && aff.size() == 1 && aff.front() == *cpu, name + ": Cpus() pins the node thread to the requested CPU");
-                    }
-                }
+            auto node = makeNode();
+            infra::ThreadedNodeOptions options;
+            if (automatic) {
+                options.CpuAutoBind();
+            } else {
+                options.Cpus({*cpu});
+            }
+            std::string const mode = automatic ? "CpuAutoBind" : "Cpus";
+            bool ok = false;
+            std::string msg;
+            if (throws([&] { ok = M::configureThreadedNode(node, options); }, &msg)) {
+                check(false, name + ": " + mode + " threw: " + msg);
+            } else {
+                auto h = M::threadHandle(node);
+                auto aff = h ? affinityOf(*h) : std::vector<int>{};
+                check(ok && aff.size() == 1 && (!cpu || aff.front() == *cpu),
+                    name + ": " + mode + " pins the node thread to one CPU");
             }
             std::cout.flush();
             ::_exit(failures ? 1 : 0);
@@ -181,6 +173,13 @@ namespace
         // that cannot observe affinity.
         std::cout << "skip: " << name << " (no fork/affinity support)\n";
 #endif
+    }
+    template <class MakeNode>
+    void testNode(MakeNode makeNode, std::string const &name)
+    {
+        // The two modes may need the same physical core. Each child owns its lease.
+        testBinding(makeNode, name, true);
+        testBinding(makeNode, name, false);
     }
 } // namespace
 

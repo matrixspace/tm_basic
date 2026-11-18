@@ -783,11 +783,6 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace sim
                 currentItem_ = chain_->head(env);
             }
             inputHandler_.initialize(env, chain_);
-            if (useBusyLoop_) {
-                innerHandler2_ = new InnerHandler2(this);
-            } else {
-                innerHandler1_ = new InnerHandler1(this);
-            }
 
             static const auto foldInPlaceChecker = boost::hana::is_valid(
                 [](auto *f, auto *v, auto const *id, auto const *data) -> decltype((void) (f->foldInPlace(*v, *id, *data))) {}
@@ -816,6 +811,13 @@ namespace dev { namespace cd606 { namespace tm { namespace basic { namespace sim
                         }
                     }
                 }
+            }
+            // The initial scan and user callbacks may throw. Start the
+            // worker only after they have succeeded.
+            if (useBusyLoop_) {
+                innerHandler2_ = new InnerHandler2(this);
+            } else {
+                innerHandler1_ = new InnerHandler1(this);
             }
             {
                 std::lock_guard<std::mutex> _(startWaiterStruct_->mutex_);

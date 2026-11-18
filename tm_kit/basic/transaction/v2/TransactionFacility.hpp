@@ -384,7 +384,10 @@ namespace transaction { namespace v2 {
         }
         ~TransactionProcessor() {
             if constexpr (M::PossiblyMultiThreaded) {
-                threadData_.running_ = false;
+                {
+                    std::lock_guard<std::mutex> lock(threadData_.transactionQueueMutex_);
+                    threadData_.running_ = false;
+                }
                 threadData_.transactionQueueCond_.notify_one();
                 if (threadData_.transactionThread_.joinable()) {
                     if (threadData_.transactionThread_.get_id() == std::this_thread::get_id()) {

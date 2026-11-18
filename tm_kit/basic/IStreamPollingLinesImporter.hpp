@@ -17,7 +17,7 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
             -> std::shared_ptr<typename M::template Importer<std::vector<std::string>>>
         {
             return M::template uniformSimpleImporter<std::vector<std::string>>(
-                [stream,realPollingInterval](Env *env)
+                [stream,realPollingInterval](Env *env, typename M::ImporterStopContext const &stop)
                     -> std::tuple<bool, typename M::template Data<std::vector<std::string>>>
                 {
                     static std::size_t bufSize = 2048;
@@ -26,7 +26,9 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     static std::streampos pos = 0;
                     static bool lastReadWasFull = false;
                     
-                    std::this_thread::sleep_for(lastReadWasFull?std::chrono::milliseconds(1):realPollingInterval);
+                    if (stop.waitForStop(lastReadWasFull?std::chrono::milliseconds(1):realPollingInterval)) {
+                        return {false, std::nullopt};
+                    }
 
                     if (stream->bad()) {
                         buf.reset();
@@ -36,6 +38,9 @@ namespace dev { namespace cd606 { namespace tm { namespace basic {
                     stream->seekg(pos);
                     lastReadWasFull = false;
                     while (true) {
+                        if (stop.stopRequested()) {
+                            return {false, std::nullopt};
+                        }
                         stream->read(buf.get()+bufEnd, bufSize-bufEnd);
                         auto actualSize = stream->gcount();
                         pos += actualSize;
