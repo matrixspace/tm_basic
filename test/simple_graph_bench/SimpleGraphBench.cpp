@@ -79,7 +79,7 @@ namespace {
 
     bool runVariant(Variant const &v, int64_t messages)
     {
-        auto *env = new Env(); //leaked: detached node threads outlive main
+        auto *env = new Env(); //leaked: node threads outlive main
         auto *r = new R(env);
         auto *src = new PushSource<int64_t>();
         auto *sinkA = new IntSink();
@@ -147,9 +147,9 @@ namespace {
 
         //warm up: start every node thread and let the clock settle
         src->push(env, int64_t(-1));
-        //triggerImporter sets its running flag inside its own thread, so a
-        //fire() right after finalize() can be dropped: retry until the
-        //facility has answered once
+        //triggerImporter sets its running flag in start() before creating its
+        //thread, so fire() right after finalize() is delivered; the retry is
+        //kept as a warm-up guard until the facility has answered once
         for (int tries = 0; tries < 1000 && sinkB->count.load() == 0; ++tries) {
             M::template Key<int64_t> k {int64_t(0)};
             fire(std::move(k));
@@ -193,7 +193,7 @@ namespace {
         if (!ok) {
             std::fprintf(stderr, "graph did not deliver exact expected counts\n");
         }
-        //graph leaked on purpose: detached threads and the clock thread
+        //graph leaked on purpose: node threads and the clock thread
         return ok;
     }
 }

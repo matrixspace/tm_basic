@@ -130,7 +130,7 @@ namespace
         }
         if (pid == 0) {
             // Child: own copy of the failure counter. Both nodes stay alive until
-            // _exit(), so their destructors never race with the detached threads.
+            // _exit(), so their destructors never race with the worker threads.
             failures = 0;
             using Node = decltype(makeNode());
             Node node1 = makeNode();
